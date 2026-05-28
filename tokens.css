@@ -1,0 +1,73 @@
+/* ===================================================================
+   tokens.css — Bald Ginger design tokens
+   Shared between Triple and the Client Portal.
+   Update colors/fonts here and both apps update.
+   =================================================================== */
+
+:root {
+  /* Surface / neutral */
+  --bg:        #f5f6f8;
+  --bg2:       #ffffff;
+  --bg3:       #eef0f3;
+  --border:    #e2e5ea;
+  --border2:   #d0d4da;
+
+  /* Text */
+  --text:      #1a1c1e;
+  --text2:     #5a6070;
+  --text3:     #9aa0aa;
+
+  /* Brand */
+  --accent:    #C8511A;   /* burnt orange */
+  --accent2:   #F5A623;   /* gold */
+  --amber:     #A86F00;   /* WCAG-safe gold for body text */
+
+  /* Semantic */
+  --green:        #1e7a45;
+  --green-bg:     #f0faf4;
+  --green-border: #a8dbb8;
+  --red:          #b93232;
+  --red-bg:       #fff3f3;
+  --red-border:   #f5a8a8;
+  --yellow:       #8a6500;
+  --yellow-bg:    #fffbec;
+  --yellow-border:#f0d080;
+  --blue:         #1a5fa8;
+  --blue-bg:      #f0f6ff;
+  --blue-border:  #a8c8f0;
+
+  /* Sidebar (dark theme island) */
+  --side-bg:     #1a1c1e;
+  --side-text:   #ffffff;
+  --side-mute:   rgba(255,255,255,.5);
+  --side-faint:  rgba(255,255,255,.3);
+  --side-tint:   rgba(255,255,255,.06);
+  --side-border: rgba(255,255,255,.08);
+
+  /* Typography */
+  --font-body:   'DM Sans', system-ui, sans-serif;
+  --font-display:'DM Serif Display', Georgia, serif;
+
+  /* Radius / shadow */
+  --r-sm: 6px;
+  --r:    8px;
+  --r-lg: 12px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.04);
+  --shadow:    0 4px 12px rgba(0,0,0,.06);
+  --shadow-lg: 0 8px 60px rgba(0,0,0,.3);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 14px; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+button { font-family: inherit; cursor: pointer; }
+input, textarea, select { font-family: inherit; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
