@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bald Ginger — Client Portal</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap"
+    rel="stylesheet"
+  />
+
+  <link rel="stylesheet" href="css/tokens.css" />
+  <link rel="stylesheet" href="css/layout.css" />
+  <link rel="stylesheet" href="css/components.css" />
+
+  <!-- Supabase client -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- SheetJS for inline xlsx rendering (KPI tab + Financials preview) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+
+  <!-- ================= LOGIN ================= -->
+  <div id="loginScreen">
+    <div class="login-card">
+      <img src="assets/Bald-Ginger_Color_HORZ.png" alt="Bald Ginger" class="login-logo" />
+      <div class="login-sub">Client Portal</div>
+
+      <form id="loginForm">
+        <div class="field">
+          <label for="loginEmail">Email</label>
+          <input type="email" id="loginEmail" autocomplete="email" required />
+        </div>
+        <div class="field">
+          <label for="loginPassword">Password</label>
+          <input type="password" id="loginPassword" autocomplete="current-password" required />
+        </div>
+        <button type="submit" class="login-btn" id="loginBtn">Sign in</button>
+        <div class="login-err" id="loginErr"></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================= APP SHELL ================= -->
+  <div id="appShell">
+    <div class="shell">
+
+      <!-- SIDEBAR -->
+      <aside class="sidebar">
+        <div class="sidebar-logo">
+          <img src="assets/Bald-Ginger_Color_HORZ.png" alt="Bald Ginger" />
+        </div>
+
+        <div class="client-switcher">
+          <div class="client-switcher-label">Viewing</div>
+          <select id="clientSelect"></select>
+        </div>
+
+        <div class="sidebar-user">
+          <div class="user-avatar" id="userAvatar">?</div>
+          <div class="user-info">
+            <div class="user-name" id="userName">—</div>
+            <div class="user-role" id="userRole">—</div>
+          </div>
+        </div>
+
+        <nav class="sidebar-nav" id="sidebarNav">
+          <div class="nav-section">Workspace</div>
+          <div class="nav-item active"   data-tab="financials">📊 Financials</div>
+          <div class="nav-item"          data-tab="kpi">📈 KPI Dashboard</div>
+          <div class="nav-item"          data-tab="projections">🔮 Projections</div>
+          <div class="nav-item"          data-tab="messages">💬 Client Specific Messages</div>
+        </nav>
+
+        <div class="sidebar-footer">
+          <button class="logout-btn" id="logoutBtn">Sign out</button>
+        </div>
+      </aside>
+
+      <!-- MAIN -->
+      <main class="main">
+        <header class="page-header">
+          <h1 class="page-title" id="pageTitle">Financials</h1>
+          <div class="page-sub" id="pageSub"></div>
+        </header>
+
+        <!-- No clients state -->
+        <div class="no-clients" id="noClientsState" style="display:none">
+          You don't have access to any clients yet. Please reach out to your contact at Bald Ginger to get connected.
+        </div>
+
+        <!-- ============================================= -->
+        <!-- TAB: FINANCIALS                                -->
+        <!-- ============================================= -->
+        <section class="tab-pane" id="tab-financials">
+
+          <!-- Team-only upload card -->
+          <section class="card upload-card" id="uploadCard" style="display:none">
+            <div class="upload-card-title">Upload financial document</div>
+            <form id="uploadForm" class="upload-form">
+              <div class="upload-row">
+                <div class="field-stack">
+                  <label for="uploadFile">File</label>
+                  <input type="file" id="uploadFile" accept=".xlsx,.xls,.pdf" required />
+                </div>
+                <div class="field-stack">
+                  <label for="uploadType">Type</label>
+                  <select id="uploadType" required>
+                    <option value="pl">P&amp;L</option>
+                    <option value="pl_detail">P&amp;L Detail</option>
+                    <option value="prime_sheet">Prime Sheet</option>
+                    <option value="balance_sheet">Balance Sheet</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div class="field-stack">
+                  <label for="uploadPeriod">Period</label>
+                  <input type="month" id="uploadPeriod" required />
+                </div>
+                <button type="submit" class="btn btn-primary" id="uploadBtn">Upload</button>
+              </div>
+              <div class="upload-status" id="uploadStatus"></div>
+            </form>
+          </section>
+
+          <!-- File list -->
+          <div id="financialsList">
+            <div class="state-msg"><span class="spinner"></span> Loading files…</div>
+          </div>
+
+        </section>
+
+        <!-- ============================================= -->
+        <!-- TAB: KPI DASHBOARD                             -->
+        <!-- ============================================= -->
+        <section class="tab-pane" id="tab-kpi" style="display:none">
+          <div id="kpiContent">
+            <div class="state-msg"><span class="spinner"></span> Loading KPI dashboard…</div>
+          </div>
+        </section>
+
+        <!-- ============================================= -->
+        <!-- TAB: PROJECTIONS                               -->
+        <!-- ============================================= -->
+        <section class="tab-pane" id="tab-projections" style="display:none">
+          <section class="card coming-soon">
+            <div class="coming-soon-icon">🔮</div>
+            <h2>Projections coming soon</h2>
+            <p>
+              Forward-looking forecasts based on your Toast and OpenTable data will live here.
+              Talk to your Bald Ginger contact if you'd like to be part of the first wave.
+            </p>
+          </section>
+        </section>
+
+        <!-- ============================================= -->
+        <!-- TAB: MESSAGES (existing, unchanged)            -->
+        <!-- ============================================= -->
+        <section class="tab-pane" id="tab-messages" style="display:none">
+          <section class="card">
+            <div class="msg-list" id="msgList"></div>
+
+            <div class="composer">
+              <textarea
+                id="composerInput"
+                placeholder="Write a message… (Enter to send, Shift+Enter for new line)"
+                rows="1"
+              ></textarea>
+              <button class="btn btn-primary" id="composerSend">Send</button>
+            </div>
+          </section>
+        </section>
+
+      </main>
+
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
