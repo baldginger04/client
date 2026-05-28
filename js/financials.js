@@ -63,6 +63,19 @@ function renderUploadCard() {
     const d = new Date();
     periodInput.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   }
+
+  // Inject the "Notify client" checkbox into the form if it isn't already there.
+  // We append it right before the Upload button so it's visually clear that the
+  // checkbox controls behavior of the upload that's about to happen.
+  if (state.isTeam && !document.getElementById('uploadNotifyCheckbox')) {
+    const btn = document.getElementById('uploadBtn');
+    if (btn && btn.parentNode) {
+      const wrap = document.createElement('label');
+      wrap.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer;user-select:none;margin-right:.5rem;white-space:nowrap';
+      wrap.innerHTML = `<input type="checkbox" id="uploadNotifyCheckbox" style="cursor:pointer"> Notify client`;
+      btn.parentNode.insertBefore(wrap, btn);
+    }
+  }
 }
 
 let uploadBound = false;
@@ -114,6 +127,10 @@ async function handleUpload() {
     if (upErr) throw upErr;
 
     // 2. Insert row in files table
+    // pending_notification mirrors the "Notify client" checkbox; the Send button
+    // (rendered as a banner when any files have this flag) batches all pending
+    // files into one email via the send-upload-notification Edge Function.
+    const notifyChecked = document.getElementById('uploadNotifyCheckbox')?.checked || false;
     const { error: insErr } = await sb.from('files').insert({
       client_id: state.clientId,
       storage_path: storagePath,
@@ -123,6 +140,7 @@ async function handleUpload() {
       size_bytes: file.size,
       mime_type: file.type || null,
       uploaded_by: state.userId,
+      pending_notification: notifyChecked,
     });
     if (insErr) {
       // Try to clean up the orphaned storage object so we don't leave junk
@@ -145,6 +163,40 @@ function setStatus(el, cls, text) {
   if (!el) return;
   el.className = 'upload-status' + (cls ? ' ' + cls : '');
   el.textContent = text;
+}
+
+// =====================================================================
+// SEND NOTIFICATION
+// =====================================================================
+// Called when the team clicks "Send notification" in the pending-files banner.
+// Invokes the send-upload-notification Edge Function, which looks up everything
+// it needs (client users, uploader profile, file list) and sends one
+// consolidated email via Resend, then clears the pending flag on those files.
+async function sendNotification(btn) {
+  if (!state.clientId || !state.userId) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    const { data, error } = await sb.functions.invoke('send-upload-notification', {
+      body: { clientId: state.clientId, uploaderUserId: state.userId },
+    });
+    if (error) throw error;
+    if (data && data.ok === false) throw new Error(data.error || 'Unknown error');
+    // Refresh the list — the banner disappears once pending_notification is cleared.
+    const recipientCount = (data?.sentTo || []).length;
+    const fileCount = data?.fileCount || 0;
+    await loadAndRenderFiles({ force: true });
+    // Flash a transient confirmation in the upload status area if it's visible.
+    const status = document.getElementById('uploadStatus');
+    if (status) {
+      const label = `Sent to ${recipientCount} recipient${recipientCount === 1 ? '' : 's'} — ${fileCount} file${fileCount === 1 ? '' : 's'} included.`;
+      setStatus(status, 'ok', '✓ ' + label);
+      setTimeout(() => { if (status.textContent.includes('✓')) setStatus(status, '', ''); }, 6000);
+    }
+  } catch (err) {
+    console.error('sendNotification failed:', err);
+    alert("Couldn't send notification: " + (err.message || err));
+    if (btn) { btn.disabled = false; btn.textContent = 'Send notification'; }
+  }
 }
 
 // =====================================================================
@@ -189,7 +241,7 @@ async function loadAndRenderFiles({ force = false } = {}) {
 async function fetchFiles(clientId) {
   const { data, error } = await sb
     .from('files')
-    .select('id, client_id, storage_path, filename, file_type, period, size_bytes, mime_type, is_archived, created_at')
+    .select('id, client_id, storage_path, filename, file_type, period, size_bytes, mime_type, is_archived, pending_notification, created_at')
     .eq('client_id', clientId)
     .order('period', { ascending: false })
     .order('created_at', { ascending: false });
@@ -223,6 +275,23 @@ function renderFileList() {
   const archivedByPeriod = groupByPeriod(archived);
 
   let html = '';
+
+  // ---- Pending-notification banner (team only) ----
+  // Files marked "Notify client" at upload sit pending until the team clicks
+  // "Send notification" — this batches multiple uploads into one email. The
+  // banner only renders if at least one such file exists and the viewer is on
+  // the team.
+  const pending = state.files.filter((f) => f.pending_notification && !f.is_archived);
+  if (state.isTeam && pending.length > 0) {
+    const label = pending.length === 1 ? '1 file' : `${pending.length} files`;
+    html += `
+      <div id="notifyBanner" style="background:#fff7ed;border:1px solid #f5c89a;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem;display:flex;align-items:center;gap:.75rem">
+        <div style="flex:1;font-size:13px;color:#7a3e0a">
+          <strong>${label} pending notification.</strong> Click Send to email the client.
+        </div>
+        <button class="btn btn-primary btn-sm" id="notifySendBtn">Send notification</button>
+      </div>`;
+  }
 
   // ---- Active ----
   if (active.length === 0) {
@@ -264,6 +333,12 @@ function renderFileList() {
       toggle.classList.toggle('is-open');
       body.classList.toggle('is-open');
     });
+  }
+
+  // Bind the Send notification button if the banner is showing.
+  const notifyBtn = document.getElementById('notifySendBtn');
+  if (notifyBtn) {
+    notifyBtn.addEventListener('click', () => sendNotification(notifyBtn));
   }
 
   // Bind row actions
