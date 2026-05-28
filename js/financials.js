@@ -390,6 +390,15 @@ function renderFileRow(f) {
   const deleteBtn = state.isTeam
     ? `<button class="icon-btn" data-action="delete" data-id="${f.id}" title="Delete">🗑</button>`
     : '';
+  // Per-file "Notify client" toggle (team only, active files only). When the
+  // file is already queued for notification, the button reads "✓ Will notify"
+  // and looks active so it's visually distinct. Clicking either way flips the
+  // pending_notification flag in the DB and the banner re-renders.
+  const notifyBtn = (state.isTeam && !f.is_archived)
+    ? (f.pending_notification
+        ? `<button class="btn btn-sm" data-action="toggle-notify" data-id="${f.id}" style="background:#fff7ed;color:#7a3e0a;border:1px solid #f5c89a" title="Click to remove from next notification">✓ Will notify</button>`
+        : `<button class="btn btn-ghost btn-sm" data-action="toggle-notify" data-id="${f.id}" title="Include in next client notification email">Notify client</button>`)
+    : '';
 
   return `
     <div class="file-row" id="row-${f.id}">
@@ -404,6 +413,7 @@ function renderFileRow(f) {
       <div></div>
       <div></div>
       <div class="actions">
+        ${notifyBtn}
         ${previewBtn}
         <button class="icon-btn" data-action="download" data-id="${f.id}" title="Download">⬇</button>
         ${deleteBtn}
@@ -427,7 +437,26 @@ async function handleRowAction(e, el) {
     case 'delete':         return deleteFile(id);
     case 'close-period':   return setPeriodArchived(period, true);
     case 'reopen-period':  return setPeriodArchived(period, false);
+    case 'toggle-notify':  return toggleFileNotify(id);
   }
+}
+
+// Flip pending_notification on a single file. Used by the per-row "Notify client"
+// button so the team can add or remove a file from the next batch notification
+// after it's already been uploaded.
+async function toggleFileNotify(id) {
+  const f = state.files.find((x) => x.id === id);
+  if (!f) return;
+  const next = !f.pending_notification;
+  const { error } = await sb.from('files').update({ pending_notification: next }).eq('id', id);
+  if (error) {
+    alert("Couldn't update notification flag: " + error.message);
+    return;
+  }
+  // Patch local cache + re-render so the banner count and button label update
+  // immediately, without a round trip.
+  f.pending_notification = next;
+  renderFileList();
 }
 
 async function downloadFile(id) {
