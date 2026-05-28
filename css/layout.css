@@ -1,0 +1,242 @@
+/* ===================================================================
+   layout.css — login screen, app shell, sidebar, main grid
+   =================================================================== */
+
+/* ---------- LOGIN ---------- */
+#loginScreen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: #0d0d0b;
+}
+
+.login-card {
+  width: 400px;
+  padding: 2.5rem;
+  background: #111110;
+  border: 1px solid #2a2a28;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.login-logo {
+  display: block;
+  width: 220px;
+  margin: 0 auto 1.5rem;
+}
+
+.login-sub {
+  font-size: 12px;
+  color: rgba(255,255,255,.35);
+  margin-bottom: 2rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.field { margin-bottom: 1rem; }
+.field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255,255,255,.5);
+  margin-bottom: 5px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.field input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #333330;
+  border-radius: var(--r-sm);
+  font-size: 14px;
+  background: #1a1a18;
+  color: white;
+  outline: none;
+  transition: border-color .15s;
+}
+.field input:focus { border-color: var(--accent); }
+
+.login-btn {
+  width: 100%;
+  padding: 11px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--r-sm);
+  font-size: 14px;
+  font-weight: 500;
+  transition: opacity .15s;
+  margin-top: .5rem;
+}
+.login-btn:hover { opacity: .88; }
+.login-btn:disabled { opacity: .5; cursor: not-allowed; }
+.login-err {
+  font-size: 12px;
+  color: #f87171;
+  margin-top: .75rem;
+  text-align: center;
+  min-height: 1em;
+}
+
+/* ---------- APP SHELL ---------- */
+#appShell { display: none; }
+.shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+}
+
+/* ---------- SIDEBAR ---------- */
+.sidebar {
+  background: var(--side-bg);
+  color: var(--side-text);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.sidebar-logo {
+  padding: 1.25rem 1rem;
+  border-bottom: 1px solid var(--side-border);
+}
+.sidebar-logo img { display: block; width: 170px; height: auto; }
+
+/* Client switcher */
+.client-switcher {
+  padding: 1rem;
+  border-bottom: 1px solid var(--side-border);
+}
+.client-switcher-label {
+  font-size: 10px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--side-faint);
+  margin-bottom: 6px;
+}
+.client-switcher select {
+  width: 100%;
+  padding: 9px 10px;
+  background: var(--side-tint);
+  border: 1px solid var(--side-border);
+  border-radius: var(--r-sm);
+  color: white;
+  font-size: 13px;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path fill='%23ffffff80' d='M6 8L0 0h12z'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+}
+.client-switcher select:focus { border-color: var(--accent2); }
+
+/* Sidebar user card */
+.sidebar-user {
+  padding: .75rem 1rem;
+  margin: .75rem .75rem 0;
+  background: var(--side-tint);
+  border-radius: var(--r);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.user-avatar {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: white;
+  flex-shrink: 0;
+}
+.user-info { min-width: 0; }
+.user-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: white;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.user-role {
+  font-size: 11px;
+  color: var(--side-faint);
+}
+
+/* Sidebar nav */
+.sidebar-nav { padding: .75rem 0; flex: 1; }
+.nav-section {
+  font-size: 10px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--side-faint);
+  padding: .5rem 1.25rem .25rem;
+  margin-top: .5rem;
+}
+.nav-item {
+  padding: .55rem 1.25rem;
+  font-size: 13px;
+  color: rgba(255,255,255,.75);
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background .12s, color .12s, border-color .12s;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.nav-item:hover { background: var(--side-tint); color: white; }
+.nav-item.active {
+  background: var(--side-tint);
+  color: white;
+  border-left-color: var(--accent);
+}
+
+.sidebar-footer {
+  padding: 1rem;
+  border-top: 1px solid var(--side-border);
+}
+.logout-btn {
+  width: 100%;
+  padding: 8px;
+  background: transparent;
+  color: var(--side-mute);
+  border: 1px solid var(--side-border);
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  transition: color .12s, border-color .12s;
+}
+.logout-btn:hover {
+  color: white;
+  border-color: rgba(255,255,255,.2);
+}
+
+/* ---------- MAIN ---------- */
+.main {
+  padding: 2rem 2.5rem;
+  max-width: 980px;
+  width: 100%;
+}
+.page-header {
+  margin-bottom: 1.5rem;
+}
+.page-title {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 400;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.page-sub {
+  font-size: 13px;
+  color: var(--text2);
+}
