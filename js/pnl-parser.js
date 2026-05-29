@@ -118,13 +118,21 @@ export function parsePnlWorkbook(arrayBuffer) {
     collected.push({ indent, account_number: accountNumber, account_name: accountName, amounts });
   }
 
-  // Filter to leaf rows: a row is a leaf if the NEXT collected row's indent
-  // is <= this row's indent (i.e. no deeper-indented children follow it).
-  // Last row is always a leaf.
+  // Filter to leaf rows: a row is a leaf if either
+  //   (a) the NEXT collected row's indent is <= this row's indent (no children), OR
+  //   (b) this row has at least one non-zero direct value (a "parent with its
+  //       own posting" — QBO puts a value on a parent row only when there's a
+  //       direct journal entry to that account, not a sum of children).
+  //
+  // Without (b), parent-level adjustments (e.g. "6120 Payroll Taxes" with a
+  // -$82.93 correcting entry above its children 6121-6124) get dropped.
   const rows = collected.filter((row, i) => {
     const next = collected[i + 1];
-    if (!next) return true;
-    return next.indent <= row.indent;
+    const hasChildren = next && next.indent > row.indent;
+    if (!hasChildren) return true;  // leaf — no children below
+    // Has children: keep ONLY if the parent itself posts a non-zero amount.
+    const hasOwnValue = Object.values(row.amounts).some((v) => v !== 0);
+    return hasOwnValue;
   });
 
   return { months, rows };
