@@ -5,8 +5,9 @@ import { sb, LAST_CLIENT_KEY } from './config.js';
 import { signIn, signOut, getSession, loadUserContext, onAuthChange } from './auth.js';
 import { loadMessages, sendMessage, unsubscribeMessages } from './messages.js';
 import { mountFinancials, unmountFinancials } from './financials.js';
-import { mountKPI, unmountKPI } from './kpi.js';
-import { mountProjections, unmountProjections } from './charts.js';
+// KPI Dashboard now renders P&L trend charts (Phase 2 step 5). The old
+// kpi.js (Prime Sheet via SheetJS) is no longer used.
+import { mountKPI, unmountKPI } from './charts.js';
 
 const LAST_TAB_KEY = 'bg_client_portal_last_tab';
 const DEFAULT_TAB = 'financials';
@@ -253,11 +254,10 @@ async function mountCurrentTab() {
       });
     } else if (t === 'kpi') {
       await mountKPI({ clientId });
-    } else if (t === 'projections') {
-      await mountProjections({ clientId });
     } else if (t === 'messages') {
       await loadMessages(clientId, $('msgList'), state.user.id);
     }
+    // projections: nothing to mount; placeholder "coming soon" card.
   } catch (err) {
     // Defensive: mount functions also handle their own errors, but if one
     // throws synchronously, we don't want it to break tab switching.
@@ -270,7 +270,6 @@ function unmountCurrentTab() {
   try {
     if (t === 'financials') unmountFinancials();
     else if (t === 'kpi')   unmountKPI();
-    else if (t === 'projections') unmountProjections();
     else if (t === 'messages') unsubscribeMessages();
   } catch (err) {
     console.error(`unmount(${t}) failed:`, err);

@@ -56,15 +56,17 @@ const TARGETS = {
 // memory and avoid the "canvas already in use" error.
 const activeCharts = {};
 
-export async function mountProjections({ clientId }) {
-  const root = document.getElementById('tab-projections');
+export async function mountKPI({ clientId }) {
+  // The KPI Dashboard tab houses these charts. Container is #kpiContent
+  // (injected by index.html). We own everything inside it.
+  const root = document.getElementById('kpiContent');
   if (!root) return;
 
   // Loading state
   root.innerHTML = `
     <section class="card">
       <h2 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin:0 0 4px">Trends</h2>
-      <p style="color:var(--text2);margin:0 0 18px;font-size:13px">Year-over-year and rolling trends from your P&amp;L data.</p>
+      <p style="color:var(--text2);margin:0 0 18px;font-size:13px">Trailing 13 months from your P&amp;L data.</p>
       <div id="charts-loading" style="padding:40px;text-align:center;color:var(--text3)">Loading charts…</div>
       <div id="charts-grid" class="charts-grid" style="display:none"></div>
       <div id="charts-empty" style="display:none"></div>
@@ -104,7 +106,10 @@ export async function mountProjections({ clientId }) {
     if (!byPeriod[r.period]) byPeriod[r.period] = {};
     byPeriod[r.period][r.category] = (byPeriod[r.period][r.category] || 0) + Number(r.amount);
   }
-  const months = Object.keys(byPeriod).sort();  // YYYY-MM sorts as string just fine
+  // Sort ascending, then cap to the trailing 13 months so YoY comparisons line
+  // up neatly (Apr 2026 alongside Apr 2025) without cramping the x-axis.
+  const allMonths = Object.keys(byPeriod).sort();
+  const months = allMonths.slice(-13);
 
   // Wait for Chart.js to be ready (it's loaded async via CDN in index.html)
   if (!window.Chart) {
@@ -133,7 +138,7 @@ export async function mountProjections({ clientId }) {
   renderPrime(months, byPeriod);
 }
 
-export function unmountProjections() {
+export function unmountKPI() {
   destroyAll();
 }
 
