@@ -622,10 +622,12 @@
 /* ===================================================================
    PHASE 2: PROJECTIONS — CHARTS GRID
    =================================================================== */
-/* The KPI tab hosts the charts. We want them to use the full available
-   width without the global page container's narrow max-width pinching them.
-   Local override: when this tab pane is the active one, its card stretches
-   to fill the available space, and the grid uses 2 equal columns. */
+/* When the KPI Dashboard is the active tab, expand the main content area
+   beyond its default 980px so the 6-chart grid has room. The .main-wide
+   class is toggled on .main from main.js on tab switches. */
+.main.main-wide {
+  max-width: 1400px;
+}
 #tab-kpi {
   max-width: none;
   width: 100%;
