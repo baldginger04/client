@@ -227,6 +227,10 @@ function showPane(tab) {
     const el = $(`tab-${t}`);
     if (el) el.style.display = (t === tab ? 'block' : 'none');
   });
+  // KPI Dashboard has its own wide layout (charts grid). Toggle a class on
+  // .main so the global max-width:980px constraint is lifted just for that tab.
+  const mainEl = document.querySelector('.main');
+  if (mainEl) mainEl.classList.toggle('main-wide', tab === 'kpi');
 }
 
 function updatePageHeader(client) {

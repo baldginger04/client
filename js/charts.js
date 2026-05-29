@@ -380,6 +380,10 @@ function renderBevCost(months, byPeriod) {
 }
 
 function renderLabor(months, byPeriod) {
+  // NOTE: labor_bonus is intentionally NOT in LABOR_CATS. Bonuses are
+  // discretionary and lumpy by nature, so including them in the labor %
+  // trend would create noise that doesn't reflect operational efficiency.
+  // Same exclusion applies in renderPrime below.
   const LABOR_CATS = ['labor_boh','labor_foh','labor_management','labor_other','labor_benefits','payroll_taxes'];
   const SALES_CATS = ['food_sales','liquor_sales','beer_sales','wine_sales','na_bev_sales','merchandise_sales','other_sales'];
   const data = months.map((p) => {
