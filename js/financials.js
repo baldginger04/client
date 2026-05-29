@@ -364,19 +364,14 @@ function renderPeriodGroup(period, files, archived) {
     return new Date(b.created_at) - new Date(a.created_at);
   });
 
-  const closeBtnHtml = (state.isTeam && !archived)
-    ? `<button class="btn btn-ghost btn-sm" data-action="close-period" data-period="${escapeAttr(period)}">Close month</button>`
-    : (state.isTeam && archived)
-      ? `<button class="btn btn-ghost btn-sm" data-action="reopen-period" data-period="${escapeAttr(period)}">Reopen</button>`
-      : '';
-
+  // Period close/reopen happens in Triple, not the portal. The portal stays
+  // focused on uploading and viewing files; bookkeeping workflow stays elsewhere.
   return `
     <div class="period-group">
       <div class="period-group-header">
         <div class="period-group-title">${formatPeriodLabel(period)}</div>
         <div style="display:flex; align-items:center; gap:.5rem">
           <div class="period-group-meta">${files.length} ${files.length === 1 ? 'file' : 'files'}</div>
-          ${closeBtnHtml}
         </div>
       </div>
       ${files.map(renderFileRow).join('')}
@@ -444,8 +439,6 @@ async function handleRowAction(e, el) {
     case 'download':       return downloadFile(id);
     case 'preview':        return togglePreview(id);
     case 'delete':         return deleteFile(id);
-    case 'close-period':   return setPeriodArchived(period, true);
-    case 'reopen-period':  return setPeriodArchived(period, false);
     case 'toggle-notify':  return toggleFileNotify(id);
     case 'parse-pl':       return openParseModal(id);
   }
@@ -543,29 +536,6 @@ async function deleteFile(id) {
   } catch (err) {
     console.error('delete failed:', err);
     alert(`Couldn't delete: ${err.message || err}`);
-  }
-}
-
-async function setPeriodArchived(period, isArchived) {
-  if (!state.isTeam) return;
-  const label = isArchived ? 'Close' : 'Reopen';
-  if (!confirm(`${label} ${formatPeriodLabel(period)} — affects all files for this period.`)) return;
-
-  try {
-    const { error } = await sb
-      .from('files')
-      .update({ is_archived: isArchived })
-      .eq('client_id', state.clientId)
-      .eq('period', period);
-    if (error) throw error;
-    // Update local cache so we don't refetch
-    state.files = state.files.map((f) =>
-      (f.period === period ? { ...f, is_archived: isArchived } : f)
-    );
-    renderFileList();
-  } catch (err) {
-    console.error('archive toggle failed:', err);
-    alert(`Couldn't ${label.toLowerCase()} month: ${err.message || err}`);
   }
 }
 
