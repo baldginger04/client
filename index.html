@@ -20,6 +20,8 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <!-- SheetJS for inline xlsx rendering (KPI tab + Financials preview) -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- Chart.js (Phase 2: P&L trend charts on Projections tab) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
 
@@ -145,16 +147,9 @@
 
         <!-- ============================================= -->
         <!-- TAB: PROJECTIONS                               -->
+        <!-- Owned by js/charts.js — DOM injected at runtime -->
         <!-- ============================================= -->
         <section class="tab-pane" id="tab-projections" style="display:none">
-          <section class="card coming-soon">
-            <div class="coming-soon-icon">🔮</div>
-            <h2>Projections coming soon</h2>
-            <p>
-              Forward-looking forecasts based on your Toast and OpenTable data will live here.
-              Talk to your Bald Ginger contact if you'd like to be part of the first wave.
-            </p>
-          </section>
         </section>
 
         <!-- ============================================= -->
