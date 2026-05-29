@@ -501,3 +501,120 @@
   .file-row { grid-template-columns: 1fr auto; }
   .file-row .actions { grid-column: 1 / -1; justify-content: flex-end; }
 }
+
+/* ===================================================================
+   PHASE 2: P&L PARSE MODAL
+   =================================================================== */
+.pnl-modal-backdrop {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.55);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: fadeIn 0.15s ease-out;
+}
+.pnl-modal {
+  background: var(--bg2);
+  border-radius: var(--r-lg);
+  max-width: 920px;
+  width: 100%;
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  border: 1px solid var(--border);
+}
+.pnl-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  gap: 1rem;
+}
+.pnl-modal-title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  color: var(--text);
+  font-style: italic;
+}
+.pnl-modal-sub {
+  font-size: 12px;
+  color: var(--text2);
+  margin-top: 4px;
+}
+.pnl-modal-body {
+  padding: 1rem 1.25rem;
+  overflow: auto;
+  flex: 1;
+}
+.pnl-help {
+  background: #fff7ed;
+  border: 1px solid #f5c89a;
+  border-radius: var(--r-sm);
+  color: #7a3e0a;
+  padding: 0.625rem 0.875rem;
+  font-size: 12px;
+  line-height: 1.45;
+  margin-bottom: 1rem;
+}
+.pnl-help em {
+  font-style: italic;
+  font-weight: 500;
+}
+.pnl-review-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.pnl-review-table th {
+  text-align: left;
+  background: var(--bg3);
+  padding: 6px 9px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text2);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+.pnl-review-table td {
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.pnl-review-table tr.pnl-row-unmatched {
+  background: #fff7ed;
+}
+.pnl-acct-num {
+  font-variant-numeric: tabular-nums;
+  color: var(--text3);
+  font-size: 11px;
+}
+.pnl-sample {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text2);
+  white-space: nowrap;
+}
+.pnl-cat-select {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border2);
+  border-radius: var(--r-sm);
+  background: var(--bg2);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+}
+.pnl-cat-select:focus { border-color: var(--accent); }
+.pnl-modal-footer {
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
