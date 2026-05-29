@@ -1,5 +1,5 @@
 /* ===================================================================
-   components.css — cards, message bubbles, badges, buttons
+   components.css â€” cards, message bubbles, badges, buttons
    =================================================================== */
 
 /* ---------- CARDS ---------- */
@@ -45,7 +45,7 @@
 /* ---------- MESSAGES ----------
    Card style, matching Triple. Each message is a bordered box with an avatar +
    author + time in a meta row across the top, then the body below. Stacked
-   vertically, full-width — no left/right alignment. This is the same visual
+   vertically, full-width â€” no left/right alignment. This is the same visual
    language used in the team app so users see consistent messaging across both. */
 .msg-list {
   max-height: 60vh;
@@ -89,7 +89,7 @@
   margin-left: auto;  /* push time to the right edge of the meta row */
 }
 
-/* Body holds the message text. No background — the .msg card is the container.
+/* Body holds the message text. No background â€” the .msg card is the container.
    white-space:pre-wrap preserves intentional line breaks from the composer. */
 .msg-body {
   font-size: 13px;
@@ -128,7 +128,7 @@
 .msg-avatar.av-lydia    { background: #5b3fa8; }
 .msg-avatar.av-default  { background: #888; }
 
-/* Team badge — shown next to author name when message is from Bald Ginger team */
+/* Team badge â€” shown next to author name when message is from Bald Ginger team */
 .badge-team {
   display: inline-block;
   padding: 1px 6px;
@@ -141,7 +141,7 @@
   text-transform: uppercase;
 }
 
-/* Resolved badge — shown next to author name when the team has marked
+/* Resolved badge â€” shown next to author name when the team has marked
    this message cleared/resolved over in Triple. Clients can't toggle this;
    it's purely a visual cue that the matter has been addressed. */
 .badge-resolved {
@@ -157,9 +157,9 @@
   text-transform: uppercase;
 }
 
-/* Resolved message styling — applied to the whole .msg block when the
+/* Resolved message styling â€” applied to the whole .msg block when the
    underlying message has cleared=true. The card fades and the body text
-   gets struck through. Clients can't toggle this — purely a visual signal
+   gets struck through. Clients can't toggle this â€” purely a visual signal
    that the team considers this thread/note addressed. */
 .msg.is-resolved {
   opacity: .65;
@@ -230,7 +230,7 @@
    =================================================================== */
 
 /* ---------- TAB PANES ---------- */
-/* All panes share the same container styling — just toggle display. */
+/* All panes share the same container styling â€” just toggle display. */
 .tab-pane { animation: fadeIn .15s ease-out; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
 
@@ -620,13 +620,13 @@
 }
 
 /* ===================================================================
-   PHASE 2: PROJECTIONS — CHARTS GRID
+   PHASE 2: PROJECTIONS â€” CHARTS GRID
    =================================================================== */
 /* When the KPI Dashboard is the active tab, expand the main content area
-   beyond its default 980px so the 6-chart grid has room. The .main-wide
-   class is toggled on .main from main.js on tab switches. */
+   to full width (no max-width cap) so the 6-chart grid uses the whole
+   available space. The .main-wide class is toggled on .main from main.js. */
 .main.main-wide {
-  max-width: 1400px;
+  max-width: none;
 }
 #tab-kpi {
   max-width: none;
