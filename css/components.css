@@ -622,10 +622,21 @@
 /* ===================================================================
    PHASE 2: PROJECTIONS — CHARTS GRID
    =================================================================== */
+/* The KPI tab hosts the charts. We want them to use the full available
+   width without the global page container's narrow max-width pinching them.
+   Local override: when this tab pane is the active one, its card stretches
+   to fill the available space, and the grid uses 2 equal columns. */
+#tab-kpi {
+  max-width: none;
+  width: 100%;
+}
+#tab-kpi > .card {
+  max-width: none;
+}
 .charts-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 16px;
+  gap: 18px;
   margin-top: 12px;
 }
 @media (max-width: 900px) {
@@ -635,7 +646,7 @@
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  padding: 14px 16px 12px;
+  padding: 16px 18px 14px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .chart-title {
@@ -648,11 +659,11 @@
 .chart-sub {
   font-size: 11px;
   color: var(--text3);
-  margin: 2px 0 10px;
+  margin: 2px 0 12px;
 }
 .chart-canvas-wrap {
   position: relative;
-  height: 220px;
+  height: 280px;
   width: 100%;
 }
 .chart-canvas-wrap canvas {
