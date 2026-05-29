@@ -712,30 +712,34 @@ function bindRetry(fn) {
 // in the modal shows the same options everywhere.
 const PNL_CATEGORIES = [
   // Sales
-  { value: 'food_sales',       label: 'Food Sales' },
-  { value: 'liquor_sales',     label: 'Liquor Sales' },
-  { value: 'beer_sales',       label: 'Beer Sales' },
-  { value: 'wine_sales',       label: 'Wine Sales' },
-  { value: 'other_sales',      label: 'Other Sales' },
-  { value: 'discounts',        label: 'Discounts / Refunds' },
+  { value: 'food_sales',         label: 'Food Sales' },
+  { value: 'liquor_sales',       label: 'Liquor Sales' },
+  { value: 'beer_sales',         label: 'Beer Sales' },
+  { value: 'wine_sales',         label: 'Wine Sales' },
+  { value: 'na_bev_sales',       label: 'NA Beverages Sales' },
+  { value: 'merchandise_sales',  label: 'Merchandise / Retail Sales' },
+  { value: 'other_sales',        label: 'Other Sales' },
+  { value: 'discounts',          label: 'Discounts / Refunds' },
   // COGS
-  { value: 'food_cogs',        label: 'Food COGS' },
-  { value: 'liquor_cogs',      label: 'Liquor COGS' },
-  { value: 'beer_cogs',        label: 'Beer COGS' },
-  { value: 'wine_cogs',        label: 'Wine COGS' },
-  { value: 'other_cogs',       label: 'Other COGS' },
+  { value: 'food_cogs',          label: 'Food COGS' },
+  { value: 'liquor_cogs',        label: 'Liquor COGS' },
+  { value: 'beer_cogs',          label: 'Beer COGS' },
+  { value: 'wine_cogs',          label: 'Wine COGS' },
+  { value: 'na_bev_cogs',        label: 'NA Beverages COGS' },
+  { value: 'merchandise_cogs',   label: 'Merchandise / Retail COGS' },
+  { value: 'other_cogs',         label: 'Other COGS' },
   // Labor
-  { value: 'labor_boh',        label: 'Labor — BOH' },
-  { value: 'labor_foh',        label: 'Labor — FOH' },
-  { value: 'labor_management', label: 'Labor — Management' },
-  { value: 'labor_other',      label: 'Labor — Other' },
-  { value: 'labor_benefits',   label: 'Labor — Benefits' },
-  { value: 'payroll_taxes',    label: 'Payroll Taxes' },
+  { value: 'labor_boh',          label: 'Labor — BOH' },
+  { value: 'labor_foh',          label: 'Labor — FOH' },
+  { value: 'labor_management',   label: 'Labor — Management' },
+  { value: 'labor_other',        label: 'Labor — Other' },
+  { value: 'labor_benefits',     label: 'Labor — Benefits' },
+  { value: 'payroll_taxes',      label: 'Payroll Taxes' },
   // Ops
-  { value: 'operating_expense', label: 'Operating Expense' },
-  { value: 'other_income',     label: 'Other Income' },
+  { value: 'operating_expense',  label: 'Operating Expense' },
+  { value: 'other_income',       label: 'Other Income' },
   // Ignore (excluded from any aggregation)
-  { value: 'ignore',           label: '— Ignore this account —' },
+  { value: 'ignore',             label: '— Ignore this account —' },
 ];
 
 // In-memory state for the active parse session. Cleared when the modal closes.
@@ -892,31 +896,57 @@ async function saveParseSession() {
       return v !== orig;  // only persist genuine overrides
     });
     if (overrideEntries.length > 0) {
-      const mappingInserts = overrideEntries
-        .map(([k, v]) => {
-          const row = rows[k];
-          if (!row.account_number) return null;  // can't make a number_exact rule without a number
-          if (!v) return null;  // no category → don't write a "to unmapped" rule
-          return {
+      // Build mapping inserts. Accounts WITH a number → save as number_exact;
+      // accounts WITHOUT a number → save as name_contains so we can match
+      // them by name on future parses. Either way, priority 10 (client-specific
+      // beats global rules).
+      const numberRules = [];
+      const nameRules = [];
+      for (const [k, v] of overrideEntries) {
+        const row = rows[k];
+        if (!v) continue;  // no category → don't write a "to unmapped" rule
+        if (row.account_number) {
+          numberRules.push({
             client_id: state.clientId,
             account_match: row.account_number,
             match_type: 'number_exact',
             category: v,
-            priority: 10,  // client-specific override beats global rules
-          };
-        })
-        .filter(Boolean);
-      if (mappingInserts.length > 0) {
-        // Delete any existing per-client rules for these account numbers first
-        // (so overrides cleanly replace prior ones rather than stacking).
-        const acctNums = mappingInserts.map((m) => m.account_match);
+            priority: 10,
+          });
+        } else {
+          nameRules.push({
+            client_id: state.clientId,
+            account_match: row.account_name,
+            match_type: 'name_contains',
+            category: v,
+            priority: 10,
+          });
+        }
+      }
+      // Delete any prior client-specific rules for these account refs so the
+      // override cleanly replaces rather than stacking.
+      if (numberRules.length > 0) {
+        const acctNums = numberRules.map((m) => m.account_match);
         const { error: delErr } = await sb
           .from('coa_mappings')
           .delete()
           .eq('client_id', state.clientId)
           .in('account_match', acctNums)
           .eq('match_type', 'number_exact');
-        if (delErr) throw new Error('Failed to clear old per-client mappings: ' + delErr.message);
+        if (delErr) throw new Error('Failed to clear old number rules: ' + delErr.message);
+      }
+      if (nameRules.length > 0) {
+        const names = nameRules.map((m) => m.account_match);
+        const { error: delErr } = await sb
+          .from('coa_mappings')
+          .delete()
+          .eq('client_id', state.clientId)
+          .in('account_match', names)
+          .eq('match_type', 'name_contains');
+        if (delErr) throw new Error('Failed to clear old name rules: ' + delErr.message);
+      }
+      const mappingInserts = [...numberRules, ...nameRules];
+      if (mappingInserts.length > 0) {
         const { error: insErr } = await sb.from('coa_mappings').insert(mappingInserts);
         if (insErr) throw new Error('Failed to save per-client mappings: ' + insErr.message);
       }
