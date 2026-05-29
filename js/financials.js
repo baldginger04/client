@@ -14,6 +14,7 @@
 // =====================================================================
 
 import { sb } from './config.js';
+import { parsePnlWorkbook, matchAccounts, persistPnlData, fetchMappings } from './pnl-parser.js';
 
 const BUCKET = 'financials';
 const LOAD_TIMEOUT_MS = 30_000;
@@ -400,6 +401,13 @@ function renderFileRow(f) {
         : `<button class="btn btn-ghost btn-sm" data-action="toggle-notify" data-id="${f.id}" title="Include in next client notification email">Notify client</button>`)
     : '';
 
+  // "Parse P&L" button (team only, P&L files only, active files only). Triggers
+  // the xlsx parser + mapping review modal flow. Clicking opens a modal so the
+  // team can confirm category assignments before the data is written to pnl_data.
+  const parseBtn = (state.isTeam && !f.is_archived && f.file_type === 'pl')
+    ? `<button class="btn btn-ghost btn-sm" data-action="parse-pl" data-id="${f.id}" title="Parse this P&L into chart data">Parse P&L</button>`
+    : '';
+
   return `
     <div class="file-row" id="row-${f.id}">
       <div>
@@ -413,6 +421,7 @@ function renderFileRow(f) {
       <div></div>
       <div></div>
       <div class="actions">
+        ${parseBtn}
         ${notifyBtn}
         ${previewBtn}
         <button class="icon-btn" data-action="download" data-id="${f.id}" title="Download">⬇</button>
@@ -438,6 +447,7 @@ async function handleRowAction(e, el) {
     case 'close-period':   return setPeriodArchived(period, true);
     case 'reopen-period':  return setPeriodArchived(period, false);
     case 'toggle-notify':  return toggleFileNotify(id);
+    case 'parse-pl':       return openParseModal(id);
   }
 }
 
@@ -684,4 +694,254 @@ function retryHtml(msg) {
 function bindRetry(fn) {
   const btn = document.getElementById('retryBtn');
   if (btn) btn.addEventListener('click', fn);
+}
+
+// =====================================================================
+// P&L PARSE MODAL
+// =====================================================================
+// Triggered from the per-file "Parse P&L" button. Flow:
+//   1. Download the xlsx from storage
+//   2. Run parsePnlWorkbook → extracts months + accounts
+//   3. fetchMappings (global + per-client) and run matchAccounts
+//   4. Render a modal showing every account row with its category dropdown.
+//      Unmatched rows surface at the top.
+//   5. On Save: persist any category edits as per-client mappings, then write
+//      all rows to pnl_data via persistPnlData. Replaces existing rows for
+//      the parsed months — so re-parses always supersede cleanly.
+// All categories the chart engine cares about, listed once so the dropdown
+// in the modal shows the same options everywhere.
+const PNL_CATEGORIES = [
+  // Sales
+  { value: 'food_sales',       label: 'Food Sales' },
+  { value: 'liquor_sales',     label: 'Liquor Sales' },
+  { value: 'beer_sales',       label: 'Beer Sales' },
+  { value: 'wine_sales',       label: 'Wine Sales' },
+  { value: 'other_sales',      label: 'Other Sales' },
+  { value: 'discounts',        label: 'Discounts / Refunds' },
+  // COGS
+  { value: 'food_cogs',        label: 'Food COGS' },
+  { value: 'liquor_cogs',      label: 'Liquor COGS' },
+  { value: 'beer_cogs',        label: 'Beer COGS' },
+  { value: 'wine_cogs',        label: 'Wine COGS' },
+  { value: 'other_cogs',       label: 'Other COGS' },
+  // Labor
+  { value: 'labor_boh',        label: 'Labor — BOH' },
+  { value: 'labor_foh',        label: 'Labor — FOH' },
+  { value: 'labor_management', label: 'Labor — Management' },
+  { value: 'labor_other',      label: 'Labor — Other' },
+  { value: 'labor_benefits',   label: 'Labor — Benefits' },
+  { value: 'payroll_taxes',    label: 'Payroll Taxes' },
+  // Ops
+  { value: 'operating_expense', label: 'Operating Expense' },
+  { value: 'other_income',     label: 'Other Income' },
+  // Ignore (excluded from any aggregation)
+  { value: 'ignore',           label: '— Ignore this account —' },
+];
+
+// In-memory state for the active parse session. Cleared when the modal closes.
+let parseSession = null;
+
+async function openParseModal(fileId) {
+  const f = state.files.find((x) => x.id === fileId);
+  if (!f) return alert("File not found");
+
+  // 1. Download + parse the xlsx
+  let parsed;
+  try {
+    const buf = await downloadAsBuffer(f.storage_path);
+    parsed = parsePnlWorkbook(buf);
+  } catch (e) {
+    return alert("Couldn't parse P&L: " + (e.message || e));
+  }
+
+  // 2. Fetch mappings and categorize
+  const mappings = await fetchMappings(state.clientId);
+  const rowsWithCat = matchAccounts(parsed.rows, mappings, state.clientId);
+
+  // 3. Stash the session and render modal
+  parseSession = {
+    file: f,
+    months: parsed.months,
+    rows: rowsWithCat,
+    overrides: {},  // keyed by row index — user-edited categories
+  };
+  injectAndShowModal();
+}
+
+function closeParseModal() {
+  parseSession = null;
+  const m = document.getElementById('pnlParseModal');
+  if (m) m.remove();
+}
+
+// Build the modal HTML once per open and inject into <body>. We do it this
+// way instead of a static markup block so financials.js stays self-contained
+// (no changes to index.html required for this feature).
+function injectAndShowModal() {
+  // Remove any stale modal first
+  const old = document.getElementById('pnlParseModal');
+  if (old) old.remove();
+
+  const { file, months, rows } = parseSession;
+  const unmatchedCount = rows.filter((r) => !r.category).length;
+  const periodRange = months.length === 1 ? months[0] : `${months[0]} → ${months[months.length - 1]}`;
+
+  // Sort: unmatched first (so the team's eye lands on them), then by account
+  // number (ascending). Stable enough for QBO numbering conventions.
+  const ordered = [...rows.map((r, i) => ({ ...r, _origIdx: i }))].sort((a, b) => {
+    const am = !a.category ? 0 : 1;
+    const bm = !b.category ? 0 : 1;
+    if (am !== bm) return am - bm;
+    return (a.account_number || '~').localeCompare(b.account_number || '~');
+  });
+
+  const sampleMonth = months[months.length - 1];  // most recent month for the sample column
+
+  const rowsHtml = ordered.map((row) => {
+    const sample = row.amounts[sampleMonth] || 0;
+    const isUnmatched = !row.category;
+    const select = `<select class="pnl-cat-select" data-row-idx="${row._origIdx}">
+      <option value="">— unmapped —</option>
+      ${PNL_CATEGORIES.map((c) => `<option value="${c.value}"${row.category === c.value ? ' selected' : ''}>${escapeHtml(c.label)}</option>`).join('')}
+    </select>`;
+    return `<tr class="${isUnmatched ? 'pnl-row-unmatched' : ''}">
+      <td class="pnl-acct-num">${escapeHtml(row.account_number || '—')}</td>
+      <td class="pnl-acct-name">${escapeHtml(row.account_name)}</td>
+      <td class="pnl-sample">${formatMoney(sample)}</td>
+      <td>${select}</td>
+    </tr>`;
+  }).join('');
+
+  const html = `
+    <div id="pnlParseModal" class="pnl-modal-backdrop">
+      <div class="pnl-modal">
+        <div class="pnl-modal-header">
+          <div>
+            <div class="pnl-modal-title">Parse P&amp;L: ${escapeHtml(file.filename)}</div>
+            <div class="pnl-modal-sub">
+              ${months.length} month${months.length === 1 ? '' : 's'} (${periodRange}) ·
+              ${rows.length} accounts ·
+              ${unmatchedCount > 0 ? `<strong style="color:var(--red)">${unmatchedCount} unmapped</strong>` : `<span style="color:var(--green)">all mapped</span>`}
+            </div>
+          </div>
+          <button class="icon-btn" id="pnlParseClose" title="Close">✕</button>
+        </div>
+        <div class="pnl-modal-body">
+          <div class="pnl-help">
+            Review the category assignments below. Any changes you make are saved as rules for this client
+            (next time, the same account auto-maps the same way). Unmapped rows are listed first.
+            Set to <em>— Ignore this account —</em> to exclude an account from all charts.
+          </div>
+          <table class="pnl-review-table">
+            <thead>
+              <tr>
+                <th style="width:80px">#</th>
+                <th>Account Name</th>
+                <th style="width:120px;text-align:right">${escapeHtml(sampleMonth)}</th>
+                <th style="width:220px">Category</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
+        <div class="pnl-modal-footer">
+          <button class="btn btn-ghost" id="pnlParseCancel">Cancel</button>
+          <button class="btn btn-primary" id="pnlParseSave">Save &amp; Apply</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.insertAdjacentHTML('beforeend', html);
+
+  // Wire events
+  document.getElementById('pnlParseClose').addEventListener('click', closeParseModal);
+  document.getElementById('pnlParseCancel').addEventListener('click', closeParseModal);
+  document.getElementById('pnlParseSave').addEventListener('click', saveParseSession);
+  // Capture dropdown changes into overrides
+  document.querySelectorAll('.pnl-cat-select').forEach((sel) => {
+    sel.addEventListener('change', (e) => {
+      const idx = parseInt(e.target.dataset.rowIdx, 10);
+      const val = e.target.value;
+      parseSession.overrides[idx] = val || null;  // empty string → null (unmapped)
+    });
+  });
+}
+
+async function saveParseSession() {
+  if (!parseSession) return;
+  const saveBtn = document.getElementById('pnlParseSave');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
+
+  try {
+    const { file, months, rows, overrides } = parseSession;
+
+    // 1. Apply overrides to the rows; collect any category changes to persist
+    //    as per-client mappings.
+    const finalRows = rows.map((r, i) => ({
+      ...r,
+      category: (i in overrides) ? overrides[i] : r.category,
+    }));
+
+    // 2. For every override that differs from what the global rules produced,
+    //    save a per-client coa_mappings row (number_exact). Re-running a parse
+    //    later will then auto-apply the same rule. Skip "ignore" mappings that
+    //    weren't unmatched to begin with (no rule needed for them).
+    const overrideEntries = Object.entries(overrides).filter(([k, v]) => {
+      const orig = rows[k].category;
+      return v !== orig;  // only persist genuine overrides
+    });
+    if (overrideEntries.length > 0) {
+      const mappingInserts = overrideEntries
+        .map(([k, v]) => {
+          const row = rows[k];
+          if (!row.account_number) return null;  // can't make a number_exact rule without a number
+          if (!v) return null;  // no category → don't write a "to unmapped" rule
+          return {
+            client_id: state.clientId,
+            account_match: row.account_number,
+            match_type: 'number_exact',
+            category: v,
+            priority: 10,  // client-specific override beats global rules
+          };
+        })
+        .filter(Boolean);
+      if (mappingInserts.length > 0) {
+        // Delete any existing per-client rules for these account numbers first
+        // (so overrides cleanly replace prior ones rather than stacking).
+        const acctNums = mappingInserts.map((m) => m.account_match);
+        const { error: delErr } = await sb
+          .from('coa_mappings')
+          .delete()
+          .eq('client_id', state.clientId)
+          .in('account_match', acctNums)
+          .eq('match_type', 'number_exact');
+        if (delErr) throw new Error('Failed to clear old per-client mappings: ' + delErr.message);
+        const { error: insErr } = await sb.from('coa_mappings').insert(mappingInserts);
+        if (insErr) throw new Error('Failed to save per-client mappings: ' + insErr.message);
+      }
+    }
+
+    // 3. Persist the actual P&L data
+    const result = await persistPnlData(state.clientId, finalRows, months, file.id);
+
+    // 4. Success — close modal, flash success
+    closeParseModal();
+    const status = document.getElementById('uploadStatus');
+    if (status) {
+      setStatus(status, 'ok', `✓ Parsed ${months.length} months, ${result.inserted} data points written.`);
+      setTimeout(() => { if (status.textContent.includes('✓')) setStatus(status, '', ''); }, 6000);
+    } else {
+      alert(`Parsed ${months.length} months, ${result.inserted} data points written.`);
+    }
+  } catch (e) {
+    console.error('Parse save failed:', e);
+    alert("Couldn't save: " + (e.message || e));
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save & Apply'; }
+  }
+}
+
+function formatMoney(n) {
+  if (n === 0) return '—';
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 }
