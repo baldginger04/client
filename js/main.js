@@ -8,10 +8,11 @@ import { mountFinancials, unmountFinancials } from './financials.js';
 // KPI Dashboard now renders P&L trend charts (Phase 2 step 5). The old
 // kpi.js (Prime Sheet via SheetJS) is no longer used.
 import { mountKPI, unmountKPI } from './charts.js';
+import { mountPnlSummary, unmountPnlSummary } from './pnl-summary.js';
 
 const LAST_TAB_KEY = 'bg_client_portal_last_tab';
 const DEFAULT_TAB = 'financials';
-const TABS = ['financials', 'kpi', 'projections', 'messages'];
+const TABS = ['financials', 'kpi', 'pnl-summary', 'projections', 'messages'];
 
 // App state
 const state = {
@@ -195,7 +196,8 @@ function showNoClients() {
 
 const TAB_TITLES = {
   financials:  { title: 'Financials',                 sub: 'P&L, Prime Sheet, and other monthly documents' },
-  kpi:         { title: 'KPI Dashboard',              sub: 'Current Prime Sheet at a glance' },
+  kpi:         { title: 'KPI Dashboard',              sub: 'Trailing 13 months from your P&L data' },
+  'pnl-summary': { title: 'P&L Summary',              sub: 'Current month vs prior month and same month last year' },
   projections: { title: 'Projections',                sub: 'Forward-looking forecasts' },
   messages:    { title: 'Client Specific Messages',   sub: 'Conversation with the Bald Ginger team' },
 };
@@ -227,10 +229,10 @@ function showPane(tab) {
     const el = $(`tab-${t}`);
     if (el) el.style.display = (t === tab ? 'block' : 'none');
   });
-  // KPI Dashboard has its own wide layout (charts grid). Toggle a class on
-  // .main so the global max-width:980px constraint is lifted just for that tab.
+  // KPI Dashboard and P&L Summary have their own wide layout. Toggle a class
+  // on .main so the global max-width:980px constraint is lifted just for those tabs.
   const mainEl = document.querySelector('.main');
-  if (mainEl) mainEl.classList.toggle('main-wide', tab === 'kpi');
+  if (mainEl) mainEl.classList.toggle('main-wide', tab === 'kpi' || tab === 'pnl-summary');
 }
 
 function updatePageHeader(client) {
@@ -258,6 +260,8 @@ async function mountCurrentTab() {
       });
     } else if (t === 'kpi') {
       await mountKPI({ clientId });
+    } else if (t === 'pnl-summary') {
+      await mountPnlSummary({ clientId });
     } else if (t === 'messages') {
       await loadMessages(clientId, $('msgList'), state.user.id);
     }
@@ -274,6 +278,7 @@ function unmountCurrentTab() {
   try {
     if (t === 'financials') unmountFinancials();
     else if (t === 'kpi')   unmountKPI();
+    else if (t === 'pnl-summary') unmountPnlSummary();
     else if (t === 'messages') unsubscribeMessages();
   } catch (err) {
     console.error(`unmount(${t}) failed:`, err);
