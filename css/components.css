@@ -731,3 +731,74 @@
   font-weight: 600;
   font-size: 14px;
 }
+
+/* Sub-header row of the P&L summary table (shows $/% labels under period) */
+.pnl-sum-subheader th {
+  font-size: 10px;
+  color: var(--text3);
+  padding-top: 2px;
+  padding-bottom: 4px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Percentage cells — smaller, muted */
+.pnl-summary-table .pnl-sum-pct {
+  font-size: 12px;
+  color: var(--text2);
+  padding-left: 4px;
+  padding-right: 8px;
+}
+
+/* Drillable rows — clickable hover state */
+.pnl-summary-table .pnl-sum-drillable {
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+.pnl-summary-table .pnl-sum-drillable:hover {
+  background: rgba(192, 75, 26, 0.06);
+}
+.pnl-summary-table .pnl-sum-drillable:hover .pnl-sum-acct {
+  color: var(--accent);
+}
+
+/* Drill-down table inside the modal */
+.pnl-drill-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.pnl-drill-table th,
+.pnl-drill-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.pnl-drill-table th {
+  background: var(--bg3);
+  color: var(--text2);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pnl-drill-table .pnl-drill-amt {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.pnl-drill-num {
+  color: var(--text3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  width: 60px;
+}
+.pnl-drill-name {
+  color: var(--text);
+}
+.pnl-drill-total td {
+  border-top: 2px solid var(--border);
+  background: rgba(0,0,0,0.02);
+}
