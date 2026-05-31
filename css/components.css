@@ -420,6 +420,28 @@
   top: 0;
   z-index: 1;
 }
+/* Pattern-based row styling. QBO P&L exports are all-bold so the file's
+   own styling can't distinguish totals from line items. We re-apply weight
+   ourselves based on row content patterns (detected in sheetToHTML).
+   Section headers (Income / Expenses / etc.) → bold, larger, faint bg.
+   Subtotal rows (Total X / Net X / Gross X) → bold, top border. */
+.xlsx-preview tr {
+  font-weight: normal;
+}
+.xlsx-preview tr.xlsx-row-section td {
+  font-weight: 700;
+  background: var(--bg3);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 14px;
+  padding-top: 10px;
+  padding-bottom: 6px;
+}
+.xlsx-preview tr.xlsx-row-subtotal td {
+  font-weight: 700;
+  border-top: 1px solid var(--border2);
+  background: rgba(0,0,0,0.02);
+}
 /* NOTE: removed the hardcoded "first row is always bold" rule — real
    formatting now comes from the workbook itself via cellStyles. */
 
