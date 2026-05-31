@@ -1127,3 +1127,21 @@
   justify-content: flex-end;
   gap: 6px;
 }
+
+/* Delete button on own comments — small "×" tucked to the right of the meta line */
+.pnl-comment-delete {
+  background: transparent;
+  border: none;
+  color: var(--text3);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+  margin-left: auto;
+  opacity: 0.5;
+  transition: opacity 0.1s, color 0.1s;
+}
+.pnl-comment-delete:hover {
+  opacity: 1;
+  color: var(--red, #c0392b);
+}
