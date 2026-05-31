@@ -197,7 +197,7 @@ function showNoClients() {
 const TAB_TITLES = {
   financials:  { title: 'Financials',                 sub: 'P&L, Prime Sheet, and other monthly documents' },
   kpi:         { title: 'KPI Dashboard',              sub: 'Trailing 13 months from your P&L data' },
-  'pnl-summary': { title: 'P&L Summary',              sub: 'Current month vs prior month and same month last year' },
+  'pnl-summary': { title: 'Prime Sheet',              sub: 'Current month vs prior month and same month last year' },
   projections: { title: 'Projections',                sub: 'Forward-looking forecasts' },
   messages:    { title: 'Client Specific Messages',   sub: 'Conversation with the Bald Ginger team' },
 };

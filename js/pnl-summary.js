@@ -77,7 +77,7 @@ export async function mountPnlSummary({ clientId }) {
 
   root.innerHTML = `
     <section class="card">
-      <h2 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin:0 0 4px">P&amp;L Summary</h2>
+      <h2 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin:0 0 4px">Prime Sheet</h2>
       <p style="color:var(--text2);margin:0 0 18px;font-size:13px">Current month vs prior month and same month last year. Click any row for account-level detail.</p>
       <div id="pnl-summary-content" style="padding:24px;text-align:center;color:var(--text3)">Loading…</div>
     </section>`;
