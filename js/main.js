@@ -257,6 +257,7 @@ async function mountCurrentTab() {
         clientId,
         isTeam: !!state.profile.is_team,
         userId: state.user.id,
+        fullName: state.profile.full_name,
       });
     } else if (t === 'kpi') {
       await mountKPI({ clientId });

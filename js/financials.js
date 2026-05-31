@@ -15,6 +15,7 @@
 
 import { sb } from './config.js';
 import { parsePnlWorkbook, matchAccounts, persistPnlData, fetchMappings } from './pnl-parser.js';
+import { activateCommenting, deactivateCommenting } from './pnl-comments-ui.js';
 
 const BUCKET = 'financials';
 const LOAD_TIMEOUT_MS = 30_000;
@@ -33,10 +34,11 @@ let state = {
 // =====================================================================
 
 /** Mount the financials tab. Called when user opens the tab OR switches clients. */
-export async function mountFinancials({ clientId, isTeam, userId }) {
+export async function mountFinancials({ clientId, isTeam, userId, fullName }) {
   state.clientId = clientId;
   state.isTeam = isTeam;
   state.userId = userId;
+  state.fullName = fullName || null;
   state.expandedFileId = null;
 
   renderUploadCard();
@@ -44,9 +46,10 @@ export async function mountFinancials({ clientId, isTeam, userId }) {
   await loadAndRenderFiles();
 }
 
-/** Called when the user leaves this tab — currently a no-op, here for symmetry. */
+/** Called when the user leaves this tab — tear down any commenting UI. */
 export function unmountFinancials() {
-  // Nothing to tear down yet. Realtime subscription on files would go here.
+  // Clean up the comment popover + sidebar if a preview was open.
+  deactivateCommenting();
 }
 
 // =====================================================================
@@ -491,12 +494,14 @@ async function togglePreview(id) {
   if (state.expandedFileId === id) {
     // collapse
     state.expandedFileId = null;
+    deactivateCommenting();
     const host = document.getElementById(`preview-host-${id}`);
     if (host) host.innerHTML = '';
     return;
   }
   // collapse any existing preview first
   if (state.expandedFileId) {
+    deactivateCommenting();
     const oldHost = document.getElementById(`preview-host-${state.expandedFileId}`);
     if (oldHost) oldHost.innerHTML = '';
   }
@@ -515,6 +520,18 @@ async function expandFile(f, scrollTo) {
     host.innerHTML = renderWorkbookHTML(wb);
     bindSheetTabs(host, wb);
     if (scrollTo) host.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    // Layer the commenting UI on top of the rendered preview. Runs after
+    // the host is populated; activateCommenting wraps the host contents in
+    // a flex layout with a sidebar and fetches existing threads.
+    await activateCommenting({
+      host,
+      fileId: f.id,
+      currentUser: {
+        id: state.userId,
+        isTeam: state.isTeam,
+        fullName: state.fullName,
+      },
+    });
   } catch (err) {
     console.error('preview failed:', err);
     host.innerHTML = `<div class="state-msg error">Couldn't preview this file: ${escapeHtml(err.message || String(err))}</div>`;
