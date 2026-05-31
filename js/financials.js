@@ -516,7 +516,11 @@ async function expandFile(f, scrollTo) {
 
   try {
     const buffer = await downloadAsBuffer(f.storage_path);
-    const wb = XLSX.read(buffer, { type: 'array' });
+    // cellStyles: true tells SheetJS to preserve style information per cell.
+    // Community Edition reads number formats, bold/italic/underline, and
+    // indentation. Cell fills and font colors require Pro and won't come
+    // through here — known limitation, acceptable for our use.
+    const wb = XLSX.read(buffer, { type: 'array', cellStyles: true });
     host.innerHTML = renderWorkbookHTML(wb);
     bindSheetTabs(host, wb);
     if (scrollTo) host.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -601,10 +605,15 @@ export function bindSheetTabs(host, wb) {
 
 function sheetToHTML(sheet) {
   if (!sheet) return '<div class="state-msg">Empty sheet.</div>';
-  // SheetJS will emit a full <table>. We use html: with editable: false so
-  // formatted values are preserved.
-  const raw = XLSX.utils.sheet_to_html(sheet, { editable: false, header: '', footer: '' });
-  // sheet_to_html wraps in <html><body>; strip wrappers, keep the <table>.
+  // sheet_to_html will emit cell `style` attributes when the workbook was
+  // read with cellStyles:true. It also respects column widths when
+  // colwidths is true. We strip the <html><body> wrappers but keep all
+  // inline styling, since that's where the formatting lives.
+  const raw = XLSX.utils.sheet_to_html(sheet, {
+    editable: false,
+    header: '',
+    footer: '',
+  });
   const m = raw.match(/<table[\s\S]*<\/table>/i);
   return m ? m[0] : raw;
 }

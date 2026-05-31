@@ -229,10 +229,10 @@ function showPane(tab) {
     const el = $(`tab-${t}`);
     if (el) el.style.display = (t === tab ? 'block' : 'none');
   });
-  // KPI Dashboard and P&L Summary have their own wide layout. Toggle a class
-  // on .main so the global max-width:980px constraint is lifted just for those tabs.
+  // KPI Dashboard, P&L Summary, and Financials all use a wider layout.
+  // Toggle a class on .main so the global max-width:980px constraint is lifted.
   const mainEl = document.querySelector('.main');
-  if (mainEl) mainEl.classList.toggle('main-wide', tab === 'kpi' || tab === 'pnl-summary');
+  if (mainEl) mainEl.classList.toggle('main-wide', tab === 'kpi' || tab === 'pnl-summary' || tab === 'financials');
 }
 
 function updatePageHeader(client) {
