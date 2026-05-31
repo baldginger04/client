@@ -424,7 +424,10 @@
    own styling can't distinguish totals from line items. We re-apply weight
    ourselves based on row content patterns (detected in sheetToHTML).
    Section headers (Income / Expenses / etc.) → bold, larger, faint bg.
-   Subtotal rows (Total X / Net X / Gross X) → bold, top border. */
+   Subtotal rows (Total X / Net X / Gross X) → bold, top border.
+   Grand totals (Total Income / Gross Profit / Net Income) → stronger.
+   Parent rows (header with no values, e.g. "4900 Discounts and Refunds"
+   sitting above its sub-accounts) → de-emphasized. */
 .xlsx-preview tr {
   font-weight: normal;
 }
@@ -441,6 +444,18 @@
   font-weight: 700;
   border-top: 1px solid var(--border2);
   background: rgba(0,0,0,0.02);
+}
+.xlsx-preview tr.xlsx-row-grandtotal td {
+  font-weight: 700;
+  border-top: 2px solid var(--text);
+  border-bottom: 2px solid var(--text);
+  background: rgba(0,0,0,0.04);
+  font-size: 13px;
+}
+.xlsx-preview tr.xlsx-row-parent td {
+  font-weight: 400;
+  color: var(--text2);
+  font-style: italic;
 }
 /* NOTE: removed the hardcoded "first row is always bold" rule — real
    formatting now comes from the workbook itself via cellStyles. */
