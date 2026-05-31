@@ -9,10 +9,11 @@ import { mountFinancials, unmountFinancials } from './financials.js';
 // kpi.js (Prime Sheet via SheetJS) is no longer used.
 import { mountKPI, unmountKPI } from './charts.js';
 import { mountPnlSummary, unmountPnlSummary } from './pnl-summary.js';
+import { mountDocuments, unmountDocuments } from './documents.js';
 
 const LAST_TAB_KEY = 'bg_client_portal_last_tab';
 const DEFAULT_TAB = 'financials';
-const TABS = ['financials', 'kpi', 'pnl-summary', 'projections', 'messages'];
+const TABS = ['financials', 'kpi', 'pnl-summary', 'documents', 'projections', 'messages'];
 
 // App state
 const state = {
@@ -198,6 +199,7 @@ const TAB_TITLES = {
   financials:  { title: 'Financials',                 sub: 'P&L, Prime Sheet, and other monthly documents' },
   kpi:         { title: 'KPI Dashboard',              sub: 'Trailing 13 months from your P&L data' },
   'pnl-summary': { title: 'Prime Sheet',              sub: 'Current month vs prior month and same month last year' },
+  documents:   { title: 'Documents',                  sub: 'W-9s, voided checks, tax documents, and other long-lived records' },
   projections: { title: 'Projections',                sub: 'Forward-looking forecasts' },
   messages:    { title: 'Client Specific Messages',   sub: 'Conversation with the Bald Ginger team' },
 };
@@ -229,10 +231,10 @@ function showPane(tab) {
     const el = $(`tab-${t}`);
     if (el) el.style.display = (t === tab ? 'block' : 'none');
   });
-  // KPI Dashboard, P&L Summary, and Financials all use a wider layout.
+  // KPI Dashboard, P&L Summary, Financials, and Documents all use a wider layout.
   // Toggle a class on .main so the global max-width:980px constraint is lifted.
   const mainEl = document.querySelector('.main');
-  if (mainEl) mainEl.classList.toggle('main-wide', tab === 'kpi' || tab === 'pnl-summary' || tab === 'financials');
+  if (mainEl) mainEl.classList.toggle('main-wide', tab === 'kpi' || tab === 'pnl-summary' || tab === 'financials' || tab === 'documents');
 }
 
 function updatePageHeader(client) {
@@ -263,6 +265,8 @@ async function mountCurrentTab() {
       await mountKPI({ clientId });
     } else if (t === 'pnl-summary') {
       await mountPnlSummary({ clientId });
+    } else if (t === 'documents') {
+      await mountDocuments({ clientId, isTeam: !!state.profile.is_team, userId: state.user.id });
     } else if (t === 'messages') {
       await loadMessages(clientId, $('msgList'), state.user.id);
     }
@@ -280,6 +284,7 @@ function unmountCurrentTab() {
     if (t === 'financials') unmountFinancials();
     else if (t === 'kpi')   unmountKPI();
     else if (t === 'pnl-summary') unmountPnlSummary();
+    else if (t === 'documents') unmountDocuments();
     else if (t === 'messages') unsubscribeMessages();
   } catch (err) {
     console.error(`unmount(${t}) failed:`, err);
