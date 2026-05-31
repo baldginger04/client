@@ -25,6 +25,23 @@
   <!-- Chart.js (Phase 2: P&L trend charts on KPI Dashboard). Used only at
        call time via window.Chart, with a wait-for-load guard. -->
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <!-- Supabase cold-start warmup. Free/Pro projects can sleep after idle
+       periods; the first query then takes 30-60s. By firing a tiny HEAD
+       request to the REST endpoint here in the HTML head, we take the
+       cold-start hit during page parse — before the user-facing queries
+       run. Result is discarded. The URL and anon key must match config.js.
+       This runs even before the deferred scripts load. -->
+  <script>
+    (function() {
+      const url = 'https://evfemokwtofbarjeezhu.supabase.co';
+      const key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV2ZmVtb2t3dG9mYmFyamVlemh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1NDUxMjQsImV4cCI6MjA5NTEyMTEyNH0.B9OSeB9CEP0TX80dJWpBPAIP6IEhYIzYlYKe4WL-6B0';
+      // Cheap query that exists primarily to wake the DB. Limit 1, no projection.
+      fetch(`${url}/rest/v1/clients?select=id&limit=1`, {
+        headers: { apikey: key, Authorization: `Bearer ${key}` },
+      }).catch(() => {});  // swallow errors; this is fire-and-forget
+    })();
+  </script>
 </head>
 <body>
 
