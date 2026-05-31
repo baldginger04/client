@@ -1305,3 +1305,109 @@
   border: 1px dashed var(--border);
   border-radius: var(--r-md);
 }
+
+/* Inline rename input (folders + files) */
+.docs-rename-input {
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  padding: 2px 6px;
+  font-family: inherit;
+  outline: none;
+  min-width: 120px;
+}
+.docs-file-rename {
+  font-size: 13px;
+  padding: 4px 8px;
+  width: 100%;
+}
+
+/* Pencil rename button next to folder name in the tree */
+.docs-tree-rename {
+  visibility: hidden;
+  background: transparent;
+  border: none;
+  color: var(--text3);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 12px;
+  margin-left: 4px;
+}
+.docs-tree-item:hover .docs-tree-rename {
+  visibility: visible;
+}
+.docs-tree-rename:hover { color: var(--accent); }
+
+/* File checkbox column — added at the left of each file row */
+.docs-file {
+  grid-template-columns: 24px 32px 1fr auto;  /* checkbox + icon + main + actions */
+}
+.docs-file-check {
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+}
+
+/* Bulk action bar (above file list, only when files are selected) */
+.docs-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  background: rgba(192, 75, 26, 0.08);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
+}
+.docs-bulk-count {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+  margin-right: auto;
+}
+
+/* Upload-zone hint text after the button */
+.docs-upload-hint {
+  font-size: 12px;
+  color: var(--text3);
+  font-style: italic;
+}
+
+/* Drag-and-drop highlight when files are being dragged over the pane.
+   We outline the whole pane so the user can drop anywhere, not just on
+   the small upload-zone bar. */
+.docs-pane.docs-drop-active {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: rgba(192, 75, 26, 0.04);
+  border-radius: var(--r-md);
+}
+
+/* Move modal */
+.docs-move-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  transition: background-color 0.1s;
+}
+.docs-move-option:hover:not(.is-disabled) {
+  background: rgba(192, 75, 26, 0.08);
+  color: var(--accent);
+}
+.docs-move-option.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.docs-move-icon { font-size: 14px; }
+.docs-move-name { flex: 1; }
+.docs-move-current {
+  font-size: 11px;
+  color: var(--text3);
+  font-style: italic;
+}
