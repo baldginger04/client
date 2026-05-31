@@ -802,3 +802,288 @@
   border-top: 2px solid var(--border);
   background: rgba(0,0,0,0.02);
 }
+
+/* ===================================================================
+   PHASE 2 follow-up: CELL-ANCHORED COMMENTS
+   =================================================================== */
+
+/* Layout wrapper: doc on the left, sidebar on the right */
+.pnl-comments-wrap {
+  display: flex;
+  gap: 0;
+  align-items: flex-start;
+}
+.pnl-comments-doc {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+.pnl-comments-sidebar {
+  flex: 0 0 280px;
+  margin-left: 12px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  max-height: 600px;
+  display: flex;
+  flex-direction: column;
+}
+.pnl-comments-sidebar.pnl-comments-sidebar-collapsed {
+  flex: 0 0 36px;
+}
+.pnl-comments-sidebar-collapsed .pnl-comments-sidebar-title,
+.pnl-comments-sidebar-collapsed .pnl-comments-sidebar-body {
+  display: none;
+}
+.pnl-comments-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.pnl-comments-sidebar-title {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--text);
+}
+.pnl-comments-sidebar-toggle {
+  background: transparent;
+  border: none;
+  color: var(--text2);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+.pnl-comments-sidebar-body {
+  overflow-y: auto;
+  padding: 8px;
+  flex: 1;
+}
+.pnl-comments-empty {
+  color: var(--text3);
+  font-size: 12px;
+  padding: 18px 12px;
+  text-align: center;
+  font-style: italic;
+}
+
+/* Sidebar thread items */
+.pnl-sidebar-section-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text3);
+  margin: 10px 4px 4px;
+  font-weight: 600;
+}
+.pnl-sidebar-thread {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  margin-bottom: 4px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+.pnl-sidebar-thread:hover {
+  background: rgba(192, 75, 26, 0.06);
+}
+.pnl-sidebar-thread-num {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 24px;
+}
+.pnl-sidebar-thread-content {
+  min-width: 0;
+  flex: 1;
+}
+.pnl-sidebar-thread-cell {
+  font-size: 10px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.pnl-sidebar-thread-body {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pnl-sidebar-thread-meta {
+  font-size: 10px;
+  color: var(--text3);
+  margin-top: 3px;
+}
+.pnl-sidebar-thread-resolved {
+  opacity: 0.55;
+}
+
+/* Cell decorations */
+.pnl-comments-doc td.pnl-cell-commented {
+  background: #fff7c2 !important;  /* override SheetJS inline styles */
+  position: relative;
+  cursor: pointer;
+}
+.pnl-comments-doc td.pnl-cell-resolved {
+  background: #e8e8e8 !important;
+  position: relative;
+  cursor: pointer;
+  color: var(--text3);
+}
+.pnl-cell-marker {
+  display: inline-block;
+  margin-left: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  vertical-align: super;
+  line-height: 1;
+  pointer-events: none;
+}
+.pnl-cell-resolved .pnl-cell-marker {
+  color: var(--text3);
+}
+.pnl-comments-doc td {
+  cursor: pointer;  /* hint that any cell is clickable for a new comment */
+}
+
+/* Brief highlight when scrolling to a cell from the sidebar */
+.pnl-cell-flash {
+  animation: pnl-cell-flash-anim 1s ease-out;
+}
+@keyframes pnl-cell-flash-anim {
+  0% { box-shadow: 0 0 0 3px var(--accent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* Popover */
+.pnl-comment-popover {
+  position: absolute;
+  width: 360px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.18);
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+}
+.pnl-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.pnl-popover-title {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--text);
+}
+.pnl-popover-body {
+  overflow-y: auto;
+  padding: 10px 12px;
+  flex: 1;
+  min-height: 60px;
+}
+.pnl-popover-empty {
+  color: var(--text3);
+  font-size: 12px;
+  font-style: italic;
+  padding: 6px 0;
+}
+.pnl-popover-new {
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pnl-popover-input {
+  width: 100%;
+  border: 1px solid var(--border2);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 8px;
+  resize: vertical;
+  min-height: 36px;
+  font-family: inherit;
+  outline: none;
+}
+.pnl-popover-input:focus { border-color: var(--accent); }
+
+/* Threads inside the popover */
+.pnl-thread {
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.pnl-thread:last-child { border-bottom: none; margin-bottom: 0; }
+.pnl-thread-resolved { opacity: 0.7; }
+.pnl-comment-root, .pnl-comment-reply {
+  padding: 6px 0;
+}
+.pnl-comment-reply {
+  margin-left: 14px;
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+.pnl-comment-meta {
+  font-size: 11px;
+  color: var(--text3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+  flex-wrap: wrap;
+}
+.pnl-comment-num {
+  color: var(--accent);
+  font-weight: 600;
+}
+.pnl-comment-author {
+  color: var(--text2);
+  font-weight: 500;
+}
+.pnl-comment-time { color: var(--text3); }
+.pnl-comment-body {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.pnl-thread-resolved-tag {
+  background: #e8f5ec;
+  color: #2e7d4f;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pnl-thread-actions {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pnl-thread-actions-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
