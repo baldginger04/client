@@ -605,17 +605,54 @@ export function bindSheetTabs(host, wb) {
 
 function sheetToHTML(sheet) {
   if (!sheet) return '<div class="state-msg">Empty sheet.</div>';
-  // sheet_to_html will emit cell `style` attributes when the workbook was
-  // read with cellStyles:true. It also respects column widths when
-  // colwidths is true. We strip the <html><body> wrappers but keep all
-  // inline styling, since that's where the formatting lives.
-  const raw = XLSX.utils.sheet_to_html(sheet, {
+  // sheet_to_html emits a <table> with cell `style` attributes when the
+  // workbook was read with cellStyles:true. We strip the <html><body>
+  // wrappers but keep all inline styling, since that's where formatting lives.
+  let raw = XLSX.utils.sheet_to_html(sheet, {
     editable: false,
     header: '',
     footer: '',
   });
   const m = raw.match(/<table[\s\S]*<\/table>/i);
-  return m ? m[0] : raw;
+  let table = m ? m[0] : raw;
+
+  // QBO P&L files indent account hierarchy via leading spaces in the cell
+  // text. Browsers collapse runs of whitespace by default, flattening the
+  // hierarchy. Force a "preserve leading whitespace" treatment on every td.
+  // Approach: replace each cell's leading spaces with non-breaking spaces.
+  // Targets cells whose textContent starts with at least one space.
+  table = table.replace(/(<td[^>]*>)((?:\s|&nbsp;)+)/g, (full, openTag, leading) => {
+    // Count actual space-like characters
+    const spaceCount = leading.replace(/&nbsp;/g, ' ').length;
+    return openTag + '&nbsp;'.repeat(spaceCount);
+  });
+
+  // Pattern-based formatting overrides. QBO export marks EVERY cell bold,
+  // which is useless as a visual signal. We re-apply formatting based on
+  // text content patterns:
+  //   - "Total X" or "Net X" or "Gross X" → bold (section subtotals)
+  //   - Plain account rows → normal weight
+  //   - Section headers (Income, Expenses, Cost of Goods Sold) → bold + larger
+  table = table.replace(/<tr([^>]*)>([\s\S]*?)<\/tr>/g, (full, trAttrs, inner) => {
+    // Extract text content of the row's first cell to classify it
+    const firstCellMatch = inner.match(/<td[^>]*>([\s\S]*?)<\/td>/);
+    const firstCellText = firstCellMatch
+      ? firstCellMatch[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim()
+      : '';
+    let extraClass = '';
+    if (/^(Total |Net |Gross )/.test(firstCellText)) {
+      extraClass = 'xlsx-row-subtotal';
+    } else if (/^(Income|Expenses|Cost of Goods Sold|Other Income|Other Expenses|Net Operating Income|Net Income)$/.test(firstCellText)) {
+      extraClass = 'xlsx-row-section';
+    }
+    if (!extraClass) return full;
+    const newTrAttrs = trAttrs.includes('class=')
+      ? trAttrs.replace(/class="([^"]*)"/, `class="$1 ${extraClass}"`)
+      : `${trAttrs} class="${extraClass}"`;
+    return `<tr${newTrAttrs}>${inner}</tr>`;
+  });
+
+  return table;
 }
 
 // =====================================================================
