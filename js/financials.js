@@ -658,16 +658,19 @@ function sheetToHTML(sheet) {
     const cellMatches = [...inner.matchAll(/<td([^>]*)>([\s\S]*?)<\/td>/g)];
     if (cellMatches.length === 0) return full;
 
-    // Helper: strip tags + nbsp to plain text for analysis
+    // Helper: strip tags + nbsp to plain text for analysis.
+    // isBlank tests for truly empty (no content) cells. Zero-valued cells
+    // ($0.00, 0, 0.00) are real values for a real account and should NOT
+    // trigger the "parent header" classification or hide the Total column.
     const plain = (html) => html.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
-    const isEmpty = (text) => text === '' || text === '0' || text === '0.00' || text === '$0.00';
+    const isBlank = (text) => text === '';
 
     const labelText = plain(cellMatches[0][2]);
     // Value cells are everything except the first (label) and last (Total).
     // QBO files always have a Total column at the right.
     const valueCells = cellMatches.slice(1, -1);
     const totalCell = cellMatches[cellMatches.length - 1];
-    const allValueCellsEmpty = valueCells.every((c) => isEmpty(plain(c[2])));
+    const allValueCellsBlank = valueCells.every((c) => isBlank(plain(c[2])));
 
     // Classify the row
     let extraClass = '';
@@ -677,7 +680,7 @@ function sheetToHTML(sheet) {
       extraClass = 'xlsx-row-subtotal';
     } else if (/^(Income|Expenses|Cost of Goods Sold|Other Income|Other Expenses)$/.test(labelText)) {
       extraClass = 'xlsx-row-section';
-    } else if (labelText !== '' && allValueCellsEmpty && isEmpty(plain(totalCell[2]))) {
+    } else if (labelText !== '' && allValueCellsBlank && isBlank(plain(totalCell[2]))) {
       // A non-empty label with all-empty values is a parent section header
       // that QBO inserts above its children (e.g. "4900 Discounts and Refunds"
       // sitting above its sub-accounts). De-emphasize.
@@ -692,7 +695,7 @@ function sheetToHTML(sheet) {
       const [_, attrs, content] = c;
       let newContent = rewriteNeg(content);
       // Blank the Total cell if all values are empty
-      if (idx === cellMatches.length - 1 && allValueCellsEmpty) {
+      if (idx === cellMatches.length - 1 && allValueCellsBlank) {
         newContent = '';
       }
       return `<td${attrs}>${newContent}</td>`;
