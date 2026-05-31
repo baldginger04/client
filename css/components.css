@@ -395,30 +395,33 @@
   border: 1px solid var(--border);
   border-radius: var(--r);
   overflow: auto;
-  max-height: 520px;
+  max-height: 75vh;  /* taller — more room for big sheets like a full P&L */
 }
 .xlsx-preview table {
   border-collapse: collapse;
   font-size: 12px;
-  width: 100%;
   font-variant-numeric: tabular-nums;
 }
 .xlsx-preview td, .xlsx-preview th {
-  padding: 5px 9px;
+  /* Light, neutral defaults. Inline styles emitted by SheetJS (bold via
+     font-weight, indents via padding-left, number formats baked into text)
+     take precedence because they're applied inline. Don't set a hard
+     background here — let cell fills come through where present. */
+  padding: 4px 9px;
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   color: var(--text);
   white-space: nowrap;
-  background: var(--bg2);
 }
 .xlsx-preview th {
   background: var(--bg3);
   font-weight: 600;
   position: sticky;
   top: 0;
+  z-index: 1;
 }
-.xlsx-preview tr:first-child td,
-.xlsx-preview tr:first-child th { font-weight: 600; }
+/* NOTE: removed the hardcoded "first row is always bold" rule — real
+   formatting now comes from the workbook itself via cellStyles. */
 
 /* Sheet tabs (for xlsx with multiple sheets) */
 .sheet-tabs {
