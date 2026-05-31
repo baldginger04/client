@@ -619,37 +619,93 @@ function sheetToHTML(sheet) {
   // QBO P&L files indent account hierarchy via leading spaces in the cell
   // text. Browsers collapse runs of whitespace by default, flattening the
   // hierarchy. Force a "preserve leading whitespace" treatment on every td.
-  // Approach: replace each cell's leading spaces with non-breaking spaces.
-  // Targets cells whose textContent starts with at least one space.
   table = table.replace(/(<td[^>]*>)((?:\s|&nbsp;)+)/g, (full, openTag, leading) => {
-    // Count actual space-like characters
     const spaceCount = leading.replace(/&nbsp;/g, ' ').length;
     return openTag + '&nbsp;'.repeat(spaceCount);
   });
 
-  // Pattern-based formatting overrides. QBO export marks EVERY cell bold,
-  // which is useless as a visual signal. We re-apply formatting based on
-  // text content patterns:
-  //   - "Total X" or "Net X" or "Gross X" → bold (section subtotals)
-  //   - Plain account rows → normal weight
-  //   - Section headers (Income, Expenses, Cost of Goods Sold) → bold + larger
+  // Single-pass row transformation. For each row we:
+  //   1. Classify the label (first cell) to decide row treatment:
+  //        - Major section grand totals (Total Income / Total COGS / etc.)
+  //          → xlsx-row-grandtotal (stronger emphasis)
+  //        - Other "Total ", "Net ", "Gross " rows → xlsx-row-subtotal
+  //        - Section headers (Income / Expenses / etc.) → xlsx-row-section
+  //        - Parent-only header rows (no values in any column) → xlsx-row-parent
+  //          (de-emphasized — they're navigation only)
+  //   2. If all month cells are empty, blank the Total column too — QBO emits
+  //      "0.00" there even when there's nothing to total, which looks like
+  //      spurious zeros to the reader.
+  //   3. Reformat negative numbers in parens (accounting style) per QBO
+  //      convention. -4,863.26 → (4,863.26).
+  //
+  // Major-section grand totals: hard-coded list of the labels QBO uses for
+  // the top-level closing totals. These deserve stronger visual weight than
+  // sub-subtotals like "Total 5100 Food COGS".
+  const GRAND_TOTAL_LABELS = new Set([
+    'Total Income',
+    'Total Cost of Goods Sold',
+    'Total Expenses',
+    'Total Other Income',
+    'Total Other Expenses',
+    'Gross Profit',
+    'Net Operating Income',
+    'Net Other Income',
+    'Net Income',
+  ]);
+
   table = table.replace(/<tr([^>]*)>([\s\S]*?)<\/tr>/g, (full, trAttrs, inner) => {
-    // Extract text content of the row's first cell to classify it
-    const firstCellMatch = inner.match(/<td[^>]*>([\s\S]*?)<\/td>/);
-    const firstCellText = firstCellMatch
-      ? firstCellMatch[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim()
-      : '';
+    // Pull out each <td> in document order so we can analyze and rewrite them.
+    const cellMatches = [...inner.matchAll(/<td([^>]*)>([\s\S]*?)<\/td>/g)];
+    if (cellMatches.length === 0) return full;
+
+    // Helper: strip tags + nbsp to plain text for analysis
+    const plain = (html) => html.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
+    const isEmpty = (text) => text === '' || text === '0' || text === '0.00' || text === '$0.00';
+
+    const labelText = plain(cellMatches[0][2]);
+    // Value cells are everything except the first (label) and last (Total).
+    // QBO files always have a Total column at the right.
+    const valueCells = cellMatches.slice(1, -1);
+    const totalCell = cellMatches[cellMatches.length - 1];
+    const allValueCellsEmpty = valueCells.every((c) => isEmpty(plain(c[2])));
+
+    // Classify the row
     let extraClass = '';
-    if (/^(Total |Net |Gross )/.test(firstCellText)) {
+    if (GRAND_TOTAL_LABELS.has(labelText)) {
+      extraClass = 'xlsx-row-grandtotal';
+    } else if (/^(Total |Net |Gross )/.test(labelText)) {
       extraClass = 'xlsx-row-subtotal';
-    } else if (/^(Income|Expenses|Cost of Goods Sold|Other Income|Other Expenses|Net Operating Income|Net Income)$/.test(firstCellText)) {
+    } else if (/^(Income|Expenses|Cost of Goods Sold|Other Income|Other Expenses)$/.test(labelText)) {
       extraClass = 'xlsx-row-section';
+    } else if (labelText !== '' && allValueCellsEmpty && isEmpty(plain(totalCell[2]))) {
+      // A non-empty label with all-empty values is a parent section header
+      // that QBO inserts above its children (e.g. "4900 Discounts and Refunds"
+      // sitting above its sub-accounts). De-emphasize.
+      extraClass = 'xlsx-row-parent';
     }
-    if (!extraClass) return full;
-    const newTrAttrs = trAttrs.includes('class=')
-      ? trAttrs.replace(/class="([^"]*)"/, `class="$1 ${extraClass}"`)
-      : `${trAttrs} class="${extraClass}"`;
-    return `<tr${newTrAttrs}>${inner}</tr>`;
+
+    // Rewrite each cell:
+    //   - Negative numbers → accounting parens
+    //   - Total cell → blank if all months empty
+    const rewriteNeg = (html) => html.replace(/(>|^|\s)-([\d,]+\.\d{2})/g, '$1($2)');
+    const rewrittenCells = cellMatches.map((c, idx) => {
+      const [_, attrs, content] = c;
+      let newContent = rewriteNeg(content);
+      // Blank the Total cell if all values are empty
+      if (idx === cellMatches.length - 1 && allValueCellsEmpty) {
+        newContent = '';
+      }
+      return `<td${attrs}>${newContent}</td>`;
+    });
+    let newInner = rewrittenCells.join('');
+
+    if (extraClass) {
+      const newTrAttrs = trAttrs.includes('class=')
+        ? trAttrs.replace(/class="([^"]*)"/, `class="$1 ${extraClass}"`)
+        : `${trAttrs} class="${extraClass}"`;
+      return `<tr${newTrAttrs}>${newInner}</tr>`;
+    }
+    return `<tr${trAttrs}>${newInner}</tr>`;
   });
 
   return table;
