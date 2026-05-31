@@ -43,6 +43,14 @@ export async function mountFinancials({ clientId, isTeam, userId, fullName }) {
 
   renderUploadCard();
   bindUploadForm();
+  // Warm up Supabase storage. The storage subsystem is separate from the
+  // SQL API and has its own cold-start. Without this, the first upload of
+  // the session can hang for 30+ seconds, then time out silently. A cheap
+  // list() call wakes the connection so by the time the user actually
+  // uploads, storage is ready. Fire-and-forget — failures are ignored.
+  if (isTeam) {
+    sb.storage.from(BUCKET).list(clientId, { limit: 1 }).catch(() => {});
+  }
   await loadAndRenderFiles();
 }
 
@@ -118,16 +126,46 @@ async function handleUpload() {
     // Build storage path: financials/<client_id>/<period>_<filename>
     // Prefix with period so listings sort naturally.
     const safeName = sanitizeFilename(file.name);
-    const storagePath = `${state.clientId}/${period}_${Date.now()}_${safeName}`;
+    let storagePath = `${state.clientId}/${period}_${Date.now()}_${safeName}`;
 
-    // 1. Upload to Storage
-    const { error: upErr } = await sb.storage
-      .from(BUCKET)
-      .upload(storagePath, file, {
+    // 1. Upload to Storage. Wrapped in a timeout + one-shot retry because
+    // Supabase storage occasionally hangs on cold starts for the first call
+    // of a session. Without this guard the user sees an infinite spinner
+    // and has to refresh — the bug that prompted this fix. 45s is generous
+    // for cold-start; legit uploads of normal P&L files complete in <5s.
+    const upWithTimeout = () => Promise.race([
+      sb.storage.from(BUCKET).upload(storagePath, file, {
         cacheControl: '3600',
         upsert: false,
         contentType: file.type || undefined,
-      });
+      }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('TIMEOUT')), 45000)),
+    ]);
+    let upErr;
+    try {
+      const result = await upWithTimeout();
+      upErr = result.error;
+    } catch (timeoutErr) {
+      // First attempt timed out — try once more. If the first call was a
+      // cold-start that eventually completed server-side, this retry may
+      // collide; we use a slightly different path suffix to avoid duplicate
+      // key errors from upsert:false.
+      console.warn('Upload timed out, retrying once...');
+      setStatus(status, '', 'Still uploading…');
+      const retryPath = `${state.clientId}/${period}_${Date.now()}_retry_${safeName}`;
+      const retry = await Promise.race([
+        sb.storage.from(BUCKET).upload(retryPath, file, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: file.type || undefined,
+        }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('TIMEOUT_AGAIN')), 45000)),
+      ]).catch((e) => ({ error: e }));
+      if (retry.error) throw new Error('Upload timed out twice. Check your connection and try again.');
+      // Retry succeeded — use the retry path for the DB insert below
+      storagePath = retryPath;
+      upErr = null;
+    }
     if (upErr) throw upErr;
 
     // 2. Insert row in files table

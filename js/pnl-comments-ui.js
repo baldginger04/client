@@ -36,6 +36,7 @@ export async function activateCommenting({ host, fileId, currentUser }) {
     currentSheet: null,   // active sheet name (from sheet tabs)
     sidebarOpen: true,
     popover: null,        // currently-open popover DOM element
+    realtimeChannel: null,  // Supabase realtime subscription
   };
 
   // Detect current sheet (if the file is multi-tab). The first sheet tab
@@ -54,6 +55,30 @@ export async function activateCommenting({ host, fileId, currentUser }) {
   // Set up sidebar + container — wrap the existing preview in a flex layout
   setupSidebarLayout(host);
 
+  // Subscribe to realtime changes on pnl_comments for THIS file only.
+  // Inserts, updates (resolve toggling), and deletes all trigger a reload.
+  // Lazily imported sb avoids a circular import; we re-use the same client
+  // by reaching into the comments module which has it.
+  try {
+    const { sb } = await import('./config.js');
+    session.realtimeChannel = sb
+      .channel(`pnl-comments-${fileId}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'pnl_comments',
+        filter: `file_id=eq.${fileId}`,
+      }, () => {
+        // Any change → refetch and re-render. Cheap and avoids merge logic.
+        // We ignore the payload because the cell decorate + sidebar work
+        // off the full threads list anyway.
+        reloadComments();
+      })
+      .subscribe();
+  } catch (e) {
+    console.warn('Realtime subscription failed (continuing without):', e);
+  }
+
   // Fetch + render
   await reloadComments();
 }
@@ -61,6 +86,13 @@ export async function activateCommenting({ host, fileId, currentUser }) {
 export function deactivateCommenting() {
   if (!session) return;
   closePopover();
+  if (session.realtimeChannel) {
+    // sb.removeChannel is async but we don't need to await — fire-and-forget
+    // is fine since we're tearing down anyway.
+    import('./config.js').then(({ sb }) => {
+      sb.removeChannel(session.realtimeChannel).catch(() => {});
+    });
+  }
   if (session.host) {
     session.host.removeEventListener('click', onHostClick);
     session.host.removeEventListener('click', onCellClick);
@@ -270,11 +302,19 @@ function renderThreadHtml(thread) {
   const resolvedTag = t.is_resolved
     ? `<span class="pnl-thread-resolved-tag">Resolved</span>`
     : '';
+  // Delete button on comments the current user authored. Replies and roots
+  // both get this. Deleting the root orphans its replies (intentional — we
+  // could cascade later, but for now this matches the data layer).
+  const myId = session?.currentUser?.id;
+  const deleteBtn = (c) => c.author_id === myId
+    ? `<button class="pnl-comment-delete" data-action="delete-comment" data-comment-id="${c.id}" title="Delete">×</button>`
+    : '';
   const repliesHtml = thread.replies.map((r) => `
     <div class="pnl-comment pnl-comment-reply">
       <div class="pnl-comment-meta">
         <span class="pnl-comment-author">${escapeHtml(r.author?.full_name || r.author?.email || 'Unknown')}</span>
         <span class="pnl-comment-time">${formatTime(r.created_at)}</span>
+        ${deleteBtn(r)}
       </div>
       <div class="pnl-comment-body">${escapeHtml(r.body)}</div>
     </div>
@@ -288,6 +328,7 @@ function renderThreadHtml(thread) {
           <span class="pnl-comment-author">${escapeHtml(t.author?.full_name || t.author?.email || 'Unknown')}</span>
           <span class="pnl-comment-time">${formatTime(t.created_at)}</span>
           ${resolvedTag}
+          ${deleteBtn(t)}
         </div>
         <div class="pnl-comment-body">${escapeHtml(t.body)}</div>
       </div>
@@ -368,6 +409,29 @@ function bindPopoverEvents(pop, cellRef) {
         if (td) openPopoverForCell(td, cellRef);
       } catch (err) {
         alert("Couldn't update: " + (err.message || err));
+        btn.disabled = false;
+      }
+    }
+
+    if (action === 'delete-comment') {
+      const commentId = btn.dataset.commentId;
+      // Find whether this is a root with replies — warn if it'd orphan them.
+      let extraWarning = '';
+      for (const t of session.threads) {
+        if (t.root.id === commentId && t.replies.length > 0) {
+          extraWarning = `\n\nThis comment has ${t.replies.length} repl${t.replies.length === 1 ? 'y' : 'ies'}. The replies will be orphaned (visible in the DB but not shown anywhere).`;
+          break;
+        }
+      }
+      if (!confirm('Delete this comment?' + extraWarning)) return;
+      btn.disabled = true;
+      try {
+        await deleteComment(commentId);
+        await reloadComments();
+        const td = session.host.querySelector(`td[id="sjs-${cssEscape(cellRef)}"]`);
+        if (td) openPopoverForCell(td, cellRef);
+      } catch (err) {
+        alert("Couldn't delete: " + (err.message || err));
         btn.disabled = false;
       }
     }
