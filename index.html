@@ -62,6 +62,42 @@
         </div>
         <button type="submit" class="login-btn" id="loginBtn">Sign in</button>
         <div class="login-err" id="loginErr"></div>
+        <div style="margin-top:16px;text-align:center">
+          <a id="forgotLink" style="font-size:12px;color:var(--text3,#888);cursor:pointer;text-decoration:none">Forgot password?</a>
+        </div>
+      </form>
+
+      <!-- Request a reset email -->
+      <form id="forgotForm" style="display:none">
+        <div style="font-size:12px;color:var(--text3,#888);line-height:1.5;text-align:center;margin-bottom:18px">
+          Enter your email and we'll send you a link to reset your password.
+        </div>
+        <div class="field">
+          <label for="forgotEmail">Email</label>
+          <input type="email" id="forgotEmail" autocomplete="email" required />
+        </div>
+        <button type="submit" class="login-btn" id="forgotBtn">Send reset link</button>
+        <div class="login-err" id="forgotMsg"></div>
+        <div style="margin-top:16px;text-align:center">
+          <a id="backToSignIn" style="font-size:12px;color:var(--text3,#888);cursor:pointer;text-decoration:none">← Back to sign in</a>
+        </div>
+      </form>
+
+      <!-- Set a new password (shown when arriving from a reset link) -->
+      <form id="resetForm" style="display:none">
+        <div style="font-size:12px;color:var(--text3,#888);line-height:1.5;text-align:center;margin-bottom:18px">
+          Choose a new password for your account.
+        </div>
+        <div class="field">
+          <label for="resetPass1">New password</label>
+          <input type="password" id="resetPass1" autocomplete="new-password" required />
+        </div>
+        <div class="field">
+          <label for="resetPass2">Confirm new password</label>
+          <input type="password" id="resetPass2" autocomplete="new-password" required />
+        </div>
+        <button type="submit" class="login-btn" id="resetBtn">Update password</button>
+        <div class="login-err" id="resetMsg"></div>
       </form>
     </div>
   </div>
