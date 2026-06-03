@@ -2,7 +2,7 @@
 // main.js — entry point. Wires auth, client switcher, tabs, and pages.
 // =====================================================================
 import { sb, LAST_CLIENT_KEY } from './config.js';
-import { signIn, signOut, getSession, loadUserContext, onAuthChange } from './auth.js';
+import { signIn, signOut, loadUserContext, onAuthChange, sendPasswordReset, updatePassword } from './auth.js';
 import { loadMessages, sendMessage, unsubscribeMessages } from './messages.js';
 import { mountFinancials, unmountFinancials } from './financials.js';
 // KPI Dashboard now renders P&L trend charts (Phase 2 step 5). The old
@@ -24,27 +24,41 @@ const state = {
   currentTab: DEFAULT_TAB,
 };
 
+// True when the page was opened from a password-reset link. Captured here at
+// module load — synchronously, before supabase-js gets a chance to strip the
+// "#...type=recovery" hash off the URL during its async init.
+let isRecovering = (window.location.hash || '').includes('type=recovery');
+
 // DOM refs (filled in on DOMContentLoaded)
 const $ = (id) => document.getElementById(id);
 
 // ---------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------
-document.addEventListener('DOMContentLoaded', async () => {
+document.addEventListener('DOMContentLoaded', () => {
   bindLoginForm();
+  bindForgotFlow();
   bindAppShell();
 
-  const session = await getSession();
-  if (session) {
-    await enterApp(session.user);
-  } else {
-    showLogin();
-  }
+  // Arrived from a password-reset link → show the "set new password" form and
+  // stay out of the app until they finish.
+  if (isRecovering) showResetForm();
 
-  // React to login/logout from elsewhere (e.g. another tab).
-  onAuthChange(async (session) => {
-    if (session) await enterApp(session.user);
-    else showLogin();
+  // Single source of truth for auth state. onAuthChange fires INITIAL_SESSION on
+  // load (restoring an existing session), SIGNED_IN on login, SIGNED_OUT on
+  // logout, and PASSWORD_RECOVERY when a reset link is opened.
+  //
+  // IMPORTANT: enterApp/showLogin are deferred with setTimeout(…,0). supabase-js
+  // holds an internal lock while this callback runs, and enterApp queries the
+  // database (loadUserContext). Calling that from inside the callback deadlocks
+  // and makes sign-in hang forever. Deferring lets the lock release first.
+  onAuthChange((session, event) => {
+    if (event === 'PASSWORD_RECOVERY') { isRecovering = true; showResetForm(); return; }
+    if (isRecovering) return;            // sit on the reset form; don't enter the app
+    setTimeout(() => {
+      if (session) enterApp(session.user);
+      else showLogin();
+    }, 0);
   });
 });
 
@@ -86,6 +100,88 @@ function showLogin() {
   $('loginBtn').disabled = false;
   $('loginBtn').textContent = 'Sign in';
   $('loginPassword').value = '';
+  if (!isRecovering) showSignIn();
+}
+
+// ---------------------------------------------------------------------
+// Forgot / reset password
+// ---------------------------------------------------------------------
+function bindForgotFlow() {
+  $('forgotLink').addEventListener('click', (e) => { e.preventDefault(); showForgot(); });
+  $('backToSignIn').addEventListener('click', (e) => { e.preventDefault(); showSignIn(); });
+  $('forgotForm').addEventListener('submit', (e) => { e.preventDefault(); handleSendReset(); });
+  $('resetForm').addEventListener('submit', (e) => { e.preventDefault(); handleUpdatePassword(); });
+}
+
+function showSignIn() {
+  $('forgotForm').style.display = 'none';
+  $('resetForm').style.display = 'none';
+  $('loginForm').style.display = 'block';
+}
+
+function showForgot() {
+  $('loginForm').style.display = 'none';
+  $('resetForm').style.display = 'none';
+  $('forgotForm').style.display = 'block';
+  const typed = $('loginEmail').value.trim();
+  if (typed) $('forgotEmail').value = typed;
+  $('forgotMsg').textContent = '';
+  $('forgotEmail').focus();
+}
+
+function showResetForm() {
+  // Force the login screen visible even if we got here mid-session.
+  $('loginScreen').style.display = 'flex';
+  $('appShell').style.display = 'none';
+  $('loginForm').style.display = 'none';
+  $('forgotForm').style.display = 'none';
+  $('resetForm').style.display = 'block';
+}
+
+async function handleSendReset() {
+  const email = $('forgotEmail').value.trim();
+  const msg = $('forgotMsg');
+  const btn = $('forgotBtn');
+  msg.style.color = '';
+  if (!email) { msg.textContent = 'Enter your email address.'; return; }
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Sending…';
+  try {
+    // The link returns the user to wherever the portal is served from.
+    await sendPasswordReset(email, window.location.origin + window.location.pathname);
+    msg.style.color = '#16a34a';
+    msg.textContent = "Check your email for a reset link. It can take a minute to arrive.";
+  } catch (err) {
+    msg.style.color = '';
+    msg.textContent = err.message || 'Could not send the reset email. Please try again.';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send reset link';
+  }
+}
+
+async function handleUpdatePassword() {
+  const p1 = $('resetPass1').value;
+  const p2 = $('resetPass2').value;
+  const msg = $('resetMsg');
+  const btn = $('resetBtn');
+  msg.style.color = '';
+  if (p1.length < 8) { msg.textContent = 'Password must be at least 8 characters.'; return; }
+  if (p1 !== p2)     { msg.textContent = 'The two passwords do not match.'; return; }
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Updating…';
+  try {
+    await updatePassword(p1);
+    msg.style.color = '#16a34a';
+    msg.textContent = 'Password updated. Taking you in…';
+    // Strip the recovery hash and reload; the active session lands them in the app.
+    setTimeout(() => window.location.replace(window.location.origin + window.location.pathname), 1200);
+  } catch (err) {
+    msg.style.color = '';
+    msg.textContent = err.message || 'Could not update the password. The link may have expired — request a new one.';
+    btn.disabled = false;
+    btn.textContent = 'Update password';
+  }
 }
 
 // ---------------------------------------------------------------------

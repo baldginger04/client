@@ -48,7 +48,22 @@ export async function loadUserContext(userId) {
   return { profile, clients: clients || [] };
 }
 
-/** Subscribe to auth state changes (login/logout). */
+/** Subscribe to auth state changes (login/logout).
+ *  The event name is passed as a SECOND argument so callers can distinguish a
+ *  password-recovery link (event === 'PASSWORD_RECOVERY') from a normal sign-in.
+ *  Existing callers that only read the first arg (session) are unaffected. */
 export function onAuthChange(callback) {
-  return sb.auth.onAuthStateChange((_event, session) => callback(session));
+  return sb.auth.onAuthStateChange((event, session) => callback(session, event));
+}
+
+/** Send a password-reset email. redirectTo is where the emailed link returns. */
+export async function sendPasswordReset(email, redirectTo) {
+  const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo });
+  if (error) throw error;
+}
+
+/** Set a new password for the current (recovery) session. */
+export async function updatePassword(newPassword) {
+  const { error } = await sb.auth.updateUser({ password: newPassword });
+  if (error) throw error;
 }
