@@ -84,13 +84,30 @@ export async function mountPnlSummary({ clientId }) {
 
   let rows;
   try {
-    const res = await sb
-      .from('pnl_data')
-      .select('period, category, amount, account_number, account_name')
-      .eq('client_id', clientId)
-      .not('category', 'is', null);
-    if (res.error) throw res.error;
-    rows = res.data || [];
+    // Supabase/PostgREST caps a single response at the project's max-rows
+    // (1000 by default). With one row per account per month, a client with a
+    // year-plus of P&L exceeds 1000 rows, so an unpaginated fetch returns only
+    // the OLDEST ~1000 rows. That made `current` (periods[last]) resolve to a
+    // stale month (e.g. Aug '25 instead of the true latest), silently showing
+    // the wrong "current month". Page through the full set, ordered by period.
+    rows = [];
+    const PAGE = 1000;
+    let from = 0;
+    while (true) {
+      const res = await sb
+        .from('pnl_data')
+        .select('period, category, amount, account_number, account_name')
+        .eq('client_id', clientId)
+        .not('category', 'is', null)
+        .order('period', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (res.error) throw res.error;
+      const page = res.data || [];
+      rows.push(...page);
+      if (page.length === 0) break;     // exhausted
+      from += page.length;
+      if (page.length < PAGE) break;    // last (partial) page
+    }
   } catch (e) {
     document.getElementById('pnl-summary-content').innerHTML =
       `<div style="color:var(--red)">Couldn't load: ${e.message || e}</div>`;
