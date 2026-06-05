@@ -74,13 +74,32 @@ export async function mountKPI({ clientId }) {
 
   let rows;
   try {
-    const res = await sb
-      .from('pnl_data')
-      .select('period, category, amount')
-      .eq('client_id', clientId)
-      .not('category', 'is', null);
-    if (res.error) throw res.error;
-    rows = res.data || [];
+    // Supabase/PostgREST caps a single response at the project's max-rows
+    // (1000 by default). The charts pull one row per account per month, so a
+    // client with a year-plus of P&L easily exceeds 1000 rows. Without an
+    // explicit order + pagination, the server returns only the first 1000
+    // rows in insertion order — the OLDEST months — and silently drops the
+    // rest, clipping the charts to (e.g.) Jan–Aug '25. Page through the full
+    // result set, ordered by period, so every month reaches the charts
+    // regardless of the server cap.
+    rows = [];
+    const PAGE = 1000;
+    let from = 0;
+    while (true) {
+      const res = await sb
+        .from('pnl_data')
+        .select('period, category, amount')
+        .eq('client_id', clientId)
+        .not('category', 'is', null)
+        .order('period', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (res.error) throw res.error;
+      const page = res.data || [];
+      rows.push(...page);
+      if (page.length === 0) break;     // exhausted
+      from += page.length;
+      if (page.length < PAGE) break;    // last (partial) page
+    }
   } catch (e) {
     document.getElementById('charts-loading').innerHTML =
       `<div style="color:var(--red)">Couldn't load chart data: ${e.message || e}</div>`;
