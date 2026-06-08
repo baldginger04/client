@@ -223,11 +223,11 @@ function sectionTotals(data) {
 // ---------------------------------------------------------------------
 function buildMetricList() {
   const headline = [
-    { id: 'h_food',   label: 'Food cost',     kind: 'line',  key: 'food_cogs', pctBase: 'food_sales', dir: 'down', noun: 'food COGS' },
-    { id: 'h_bev',    label: 'Beverage cost', kind: 'bev',   dir: 'down', noun: 'bev COGS (liq+beer+wine)' },
+    { id: 'h_food',   label: 'Food Cost',     kind: 'line',  key: 'food_cogs', pctBase: 'food_sales', dir: 'down', noun: 'food COGS' },
+    { id: 'h_bev',    label: 'Beverage Cost', kind: 'bev',   dir: 'down', noun: 'bev COGS (liq+beer+wine)' },
     { id: 'h_labor',  label: 'Labor',         kind: 'total', which: 'labor', pctBase: 'TOTAL_INCOME', dir: 'down', noun: 'labor' },
-    { id: 'h_prime',  label: 'Prime cost',    kind: 'prime', pctBase: 'TOTAL_INCOME', dir: 'down', noun: 'COGS + labor' },
-    { id: 'h_income', label: 'Total income',  kind: 'total', which: 'income', pctBase: null, dir: 'up', noun: 'total income' },
+    { id: 'h_prime',  label: 'Prime Cost',    kind: 'prime', pctBase: 'TOTAL_INCOME', dir: 'down', noun: 'COGS + labor' },
+    { id: 'h_income', label: 'Total Income',  kind: 'total', which: 'income', pctBase: null, dir: 'up', noun: 'total income' },
   ];
   const lines = [];
   SECTIONS.forEach((section) => {
@@ -340,13 +340,22 @@ function renderWindows() {
     const pv = prior ? metricValue(metric, prior) : null;
 
     const isPct = mv.pct !== null && mv.pct !== undefined && !isNaN(mv.pct);
-    const big = isPct ? `${mv.pct.toFixed(1)}%` : fmtMoney(mv.value);
-    const sub = isPct
-      ? `${fmtMoney(mv.value)} ${metric.noun} · ${cur.months} mo`
-      : `${metric.noun} · ${cur.months} mo`;
+    // A percentage metric whose dollars roll up to $0 means the underlying
+    // lines aren't booked for this client (e.g. a place that lumps bar COGS
+    // into food, so liquor/beer/wine COGS are empty). Show "not recorded"
+    // rather than a misleading 0.0%.
+    const noData = isPct && Math.round(mv.value) === 0;
+    const big = noData
+      ? '—'
+      : (isPct ? `${mv.pct.toFixed(1)}%` : fmtMoney(mv.value));
+    const sub = noData
+      ? `not recorded · ${cur.months} mo`
+      : (isPct
+          ? `${fmtMoney(mv.value)} ${metric.noun} · ${cur.months} mo`
+          : `${metric.noun} · ${cur.months} mo`);
 
     let chip = '';
-    if (pv) {
+    if (pv && !noData) {
       let favorable = false, txt = '';
       if (isPct && pv.pct !== null && pv.pct !== undefined && !isNaN(pv.pct)) {
         const d = mv.pct - pv.pct;
