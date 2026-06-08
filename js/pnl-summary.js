@@ -67,6 +67,7 @@ const COMPUTED = [
 // State for the active drill-down (current client + raw rows kept here so
 // the modal can re-query account-level detail without another DB call).
 let activeData = null;
+let selectedMetric = 'h_food';
 
 // ---------------------------------------------------------------------
 // Entry points
@@ -79,6 +80,7 @@ export async function mountPnlSummary({ clientId }) {
     <section class="card">
       <h2 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin:0 0 4px">Prime Sheet</h2>
       <p style="color:var(--text2);margin:0 0 18px;font-size:13px">Current month vs prior month and same month last year. Click any row for account-level detail.</p>
+      <div id="pnl-metric-picker"></div>
       <div id="pnl-summary-content" style="padding:24px;text-align:center;color:var(--text3)">Loading…</div>
     </section>`;
 
@@ -209,6 +211,172 @@ function sectionTotals(data) {
   for (const r of SECTIONS[1].rows) t.cogs   += (data[r.key] || 0);
   for (const r of SECTIONS[2].rows) t.labor  += (data[r.key] || 0);
   return t;
+}
+
+// ---------------------------------------------------------------------
+// Metric picker — trailing 1 / 3 / 12 month view of a single metric.
+// Renders above the full table on all screen sizes. Each window is the
+// sum of the last N months aggregated into one synthetic period, then run
+// through the SAME sectionTotals/computePct the table uses, so the numbers
+// tie out exactly. Percentages are ratio-of-summed-dollars across the
+// window (never an average of monthly percentages).
+// ---------------------------------------------------------------------
+function buildMetricList() {
+  const headline = [
+    { id: 'h_food',   label: 'Food cost',     kind: 'line',  key: 'food_cogs', pctBase: 'food_sales', dir: 'down', noun: 'food COGS' },
+    { id: 'h_bev',    label: 'Beverage cost', kind: 'bev',   dir: 'down', noun: 'bev COGS (liq+beer+wine)' },
+    { id: 'h_labor',  label: 'Labor',         kind: 'total', which: 'labor', pctBase: 'TOTAL_INCOME', dir: 'down', noun: 'labor' },
+    { id: 'h_prime',  label: 'Prime cost',    kind: 'prime', pctBase: 'TOTAL_INCOME', dir: 'down', noun: 'COGS + labor' },
+    { id: 'h_income', label: 'Total income',  kind: 'total', which: 'income', pctBase: null, dir: 'up', noun: 'total income' },
+  ];
+  const lines = [];
+  SECTIONS.forEach((section) => {
+    const dir = section.title === 'Sales' ? 'up' : 'down';
+    section.rows.forEach((row) => {
+      lines.push({ id: 'k_' + row.key, group: section.title, label: row.label,
+        kind: 'line', key: row.key, pctBase: row.pctBase, dir, noun: row.label });
+    });
+  });
+  const totalsRows = [
+    { id: 't_income', group: 'Totals', label: 'Total Income', kind: 'total', which: 'income', pctBase: null, dir: 'up', noun: 'total income' },
+    { id: 't_cogs',   group: 'Totals', label: 'Total COGS',   kind: 'total', which: 'cogs', pctBase: 'TOTAL_INCOME', dir: 'down', noun: 'COGS' },
+    { id: 't_labor',  group: 'Totals', label: 'Total Labor',  kind: 'total', which: 'labor', pctBase: 'TOTAL_INCOME', dir: 'down', noun: 'labor' },
+    { id: 't_gross',  group: 'Totals', label: 'Gross Profit', kind: 'gross', pctBase: 'TOTAL_INCOME', dir: 'up', noun: 'income − COGS' },
+    { id: 't_prime',  group: 'Totals', label: 'Prime Cost',   kind: 'prime', pctBase: 'TOTAL_INCOME', dir: 'down', noun: 'COGS + labor' },
+  ];
+  return { headline, lines, totalsRows };
+}
+
+function findMetric(id) {
+  const { headline, lines, totalsRows } = buildMetricList();
+  const all = headline.concat(lines, totalsRows);
+  return all.find((m) => m.id === id) || headline[0];
+}
+
+// Sum a slice of period keys into one synthetic data dict + section totals.
+function aggregateWindow(byPeriod, periodSlice) {
+  const data = {};
+  periodSlice.forEach((p) => {
+    const pd = byPeriod[p] || {};
+    Object.keys(pd).forEach((cat) => { data[cat] = (data[cat] || 0) + pd[cat]; });
+  });
+  return { data, totals: sectionTotals(data), months: periodSlice.length };
+}
+
+// { value, pct } for a metric over an aggregated window.
+function metricValue(metric, win) {
+  const { data, totals } = win;
+  switch (metric.kind) {
+    case 'line': {
+      const value = data[metric.key] || 0;
+      return { value, pct: computePct(value, metric.pctBase, data, totals) };
+    }
+    case 'bev': {
+      const value = (data.liquor_cogs || 0) + (data.beer_cogs || 0) + (data.wine_cogs || 0);
+      const base  = (data.liquor_sales || 0) + (data.beer_sales || 0) + (data.wine_sales || 0);
+      return { value, pct: base ? (value / base) * 100 : null };
+    }
+    case 'total': {
+      const value = totals[metric.which] || 0;
+      return { value, pct: computePct(value, metric.pctBase, data, totals) };
+    }
+    case 'prime': {
+      const value = (totals.cogs || 0) + (totals.labor || 0);
+      return { value, pct: computePct(value, 'TOTAL_INCOME', data, totals) };
+    }
+    case 'gross': {
+      const value = (totals.income || 0) - (totals.cogs || 0);
+      return { value, pct: computePct(value, 'TOTAL_INCOME', data, totals) };
+    }
+    default: return { value: 0, pct: null };
+  }
+}
+
+function renderMetricPicker() {
+  const host = document.getElementById('pnl-metric-picker');
+  if (!host || !activeData) return;
+  const { headline, lines, totalsRows } = buildMetricList();
+  const opt = (m) => `<option value="${m.id}"${m.id === selectedMetric ? ' selected' : ''}>${escapeHtml(m.label)}</option>`;
+  const byGroup = {};
+  lines.forEach((m) => { (byGroup[m.group] = byGroup[m.group] || []).push(m); });
+  const lineGroups = Object.keys(byGroup)
+    .map((g) => `<optgroup label="${escapeAttr(g)}">${byGroup[g].map(opt).join('')}</optgroup>`)
+    .join('');
+  host.innerHTML = `
+    <div class="pnl-mp">
+      <div class="pnl-mp-bar">
+        <label for="pnl-metric-select" class="pnl-mp-label">Quick look</label>
+        <select id="pnl-metric-select" class="pnl-mp-select">
+          <optgroup label="Headline">${headline.map(opt).join('')}</optgroup>
+          ${lineGroups}
+          <optgroup label="Totals">${totalsRows.map(opt).join('')}</optgroup>
+        </select>
+      </div>
+      <div class="pnl-mp-windows" id="pnl-windows"></div>
+    </div>`;
+  document.getElementById('pnl-metric-select').addEventListener('change', (e) => {
+    selectedMetric = e.target.value;
+    renderWindows();
+  });
+  renderWindows();
+}
+
+function renderWindows() {
+  const host = document.getElementById('pnl-windows');
+  if (!host || !activeData) return;
+  const { byPeriod } = activeData;
+  const periods = Object.keys(byPeriod).sort();
+  const metric = findMetric(selectedMetric);
+  const specs = [
+    { n: 1,  label: 'Last month' },
+    { n: 3,  label: 'Last quarter' },
+    { n: 12, label: 'Last year' },
+  ];
+  host.innerHTML = specs.map((spec) => {
+    const cur = aggregateWindow(byPeriod, periods.slice(-spec.n));
+    const priorSlice = periods.length >= spec.n * 2 ? periods.slice(-spec.n * 2, -spec.n) : [];
+    const prior = priorSlice.length ? aggregateWindow(byPeriod, priorSlice) : null;
+    const mv = metricValue(metric, cur);
+    const pv = prior ? metricValue(metric, prior) : null;
+
+    const isPct = mv.pct !== null && mv.pct !== undefined && !isNaN(mv.pct);
+    const big = isPct ? `${mv.pct.toFixed(1)}%` : fmtMoney(mv.value);
+    const sub = isPct
+      ? `${fmtMoney(mv.value)} ${metric.noun} · ${cur.months} mo`
+      : `${metric.noun} · ${cur.months} mo`;
+
+    let chip = '';
+    if (pv) {
+      let favorable = false, txt = '';
+      if (isPct && pv.pct !== null && pv.pct !== undefined && !isNaN(pv.pct)) {
+        const d = mv.pct - pv.pct;
+        if (Math.abs(d) >= 0.05) {
+          favorable = (metric.dir === 'up' && d > 0) || (metric.dir === 'down' && d < 0);
+          txt = `${d > 0 ? '+' : '−'}${Math.abs(d).toFixed(1)} pts`;
+        }
+      } else if (!isPct && pv.value) {
+        const d = ((mv.value - pv.value) / Math.abs(pv.value)) * 100;
+        if (Math.abs(d) >= 0.05) {
+          favorable = (metric.dir === 'up' && d > 0) || (metric.dir === 'down' && d < 0);
+          txt = `${d > 0 ? '+' : '−'}${Math.abs(d).toFixed(1)}%`;
+        }
+      }
+      if (txt) {
+        const color = favorable ? '#2e7d4f' : '#c0392b';
+        const arrow = txt.indexOf('−') === 0 ? '↓' : '↑';
+        chip = `<span class="pnl-mp-chip" style="color:${color}">${arrow} ${txt}</span>`;
+      }
+    }
+    return `
+      <div class="pnl-mp-card">
+        <div class="pnl-mp-card-top">
+          <span class="pnl-mp-win">${spec.label}</span>
+          ${chip}
+        </div>
+        <div class="pnl-mp-big">${big}</div>
+        <div class="pnl-mp-sub">${sub}</div>
+      </div>`;
+  }).join('');
 }
 
 // ---------------------------------------------------------------------
@@ -353,6 +521,8 @@ function renderTable() {
       openDrillModal(category, label);
     });
   });
+
+  renderMetricPicker();
 }
 
 // ---------------------------------------------------------------------
