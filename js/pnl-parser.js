@@ -1,21 +1,25 @@
 // =====================================================================
-// pnl-parser.js — parse QBO multi-month P&L xlsx files
+// pnl-parser.js — parse QBO P&L xlsx files (multi-month OR single-month)
 //
 // Workflow:
 //   1. parsePnlWorkbook(arrayBuffer)   → extracts raw rows + month columns
 //   2. matchAccounts(rows, mappings)   → categorizes each account
 //   3. persistPnlData(...)             → writes to pnl_data table
 //
-// The QBO format we expect (verified against Bill's Hospitality export):
-//   Row 1: Company name
-//   Row 2: "Profit and Loss"
-//   Row 3: Date range (e.g. "May 2025 - April 2026")
-//   Row 4: blank
-//   Row 5: Header row — column A blank, B-? months ("May 2025", "Jun 2025",...),
-//          last column is "Total"
-//   Row 6+: account rows. Leading spaces in column A indicate hierarchy.
-//          Top-level accounts (3 spaces), child accounts (6+ spaces).
-//   Account labels can be:
+// Two export shapes are supported:
+//
+//   MULTI-month (QBO "compare months"):
+//     Row 3: date range (e.g. "May 2025 - April 2026")
+//     Row 5: header — col A blank, cols B+ are months ("May 2025", ...),
+//            trailing "Total" column.
+//
+//   SINGLE-month (QBO "this month"):
+//     Row 3: the period ("May 2026") — note it sits in COLUMN A, not a header
+//     Row 5: header — col A blank, single data column labeled "Total"
+//     The period is read from the title block; "Total" holds the values.
+//
+//   Row 6+ (both shapes): account rows. Leading spaces in column A indicate
+//          hierarchy (top-level ~3 spaces, children 6+). Labels can be:
 //     "   4100 Food Sales"        → number=4100, name=Food Sales
 //     "      Mixed Beverage Tax"  → no number, name only
 //     "Total 4100 Food Sales"     → subtotal line (skipped — we use leaf rows)
@@ -52,9 +56,19 @@ export function parsePnlWorkbook(arrayBuffer) {
   // Get a 2D array of values. Defval ensures blank cells are '' not undefined.
   const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
-  // Find the header row (the one with month labels in B onward). We look for
-  // a row where column A is blank and column B contains a month-year string.
+  // Find the header row + the month columns. QBO P&L exports come in two shapes:
+  //
+  //   (a) MULTI-month: column A blank, columns B+ are month labels ("May 2025",
+  //       "Jun 2025", ...), usually with a trailing "Total" column.
+  //   (b) SINGLE-month: the period lives in the title block (e.g. A3 = "May 2026"
+  //       or a range like "January - May 2026"), and the one data column is
+  //       labeled "Total".
+  //
+  // Try (a) first, then fall back to (b).
   let headerRowIdx = -1;
+  let singlePeriod = null;  // set only for shape (b)
+
+  // (a) A row whose first data cell (col B) is a month-year label.
   for (let i = 0; i < Math.min(aoa.length, 15); i++) {
     const row = aoa[i];
     if (!row) continue;
@@ -65,19 +79,51 @@ export function parsePnlWorkbook(arrayBuffer) {
       break;
     }
   }
+
+  // (b) Single-month: a row with column A blank and a "Total" column, where the
+  //     period comes from a month/range label in the title rows above it.
+  if (headerRowIdx < 0) {
+    for (let i = 0; i < Math.min(aoa.length, 15); i++) {
+      const row = aoa[i];
+      if (!row) continue;
+      const colA = String(row[0] || '').trim();
+      const hasTotal = row.slice(1).some((v) => String(v || '').trim().toLowerCase() === 'total');
+      if (colA !== '' || !hasTotal) continue;
+      // Found the value-column header; read the period from the title rows above.
+      // parseMonthLabel is strict ("May 2026"); parseMonthRangeEnd handles ranges.
+      for (let j = 0; j < i; j++) {
+        const title = String((aoa[j] || [])[0] || '').trim();
+        const p = parseMonthLabel(title) || parseMonthRangeEnd(title);
+        if (p) { singlePeriod = p; break; }
+      }
+      if (singlePeriod) { headerRowIdx = i; break; }
+    }
+  }
+
   if (headerRowIdx < 0) throw new Error("Couldn't find month header row — is this a QBO P&L export?");
 
-  // Build month list — convert "May 2025" → "2025-05" for each header cell.
+  // Build the month list + the column index each month's values live in.
   const headerRow = aoa[headerRowIdx];
   const months = [];
   const monthColIdxs = [];  // index into the row array for each month column
-  for (let c = 1; c < headerRow.length; c++) {
-    const label = String(headerRow[c] || '').trim();
-    if (label === 'Total' || label === '') continue;
-    const period = parseMonthLabel(label);
-    if (period) {
-      months.push(period);
-      monthColIdxs.push(c);
+  if (singlePeriod) {
+    // Shape (b): single period; the values sit in the "Total" column.
+    let totalCol = -1;
+    for (let c = 1; c < headerRow.length; c++) {
+      if (String(headerRow[c] || '').trim().toLowerCase() === 'total') { totalCol = c; break; }
+    }
+    months.push(singlePeriod);
+    monthColIdxs.push(totalCol >= 0 ? totalCol : 1);
+  } else {
+    // Shape (a): one column per month; skip the trailing "Total".
+    for (let c = 1; c < headerRow.length; c++) {
+      const label = String(headerRow[c] || '').trim();
+      if (label === 'Total' || label === '') continue;
+      const period = parseMonthLabel(label);
+      if (period) {
+        months.push(period);
+        monthColIdxs.push(c);
+      }
     }
   }
   if (months.length === 0) throw new Error('No month columns found in header row');
@@ -146,6 +192,24 @@ function parseMonthLabel(label) {
   const monthIdx = months.findIndex((mm) => m[1].toLowerCase().startsWith(mm.toLowerCase()));
   if (monthIdx < 0) return null;
   return `${m[2]}-${String(monthIdx + 1).padStart(2, '0')}`;
+}
+
+/** Best-effort period from a single-month title that isn't a bare "May 2026" —
+ *  e.g. "January - May 2026", "May 1-31, 2026", "Jan 1 - May 31, 2026" — returns
+ *  the END month as "2026-05". Requires a 4-digit year, so plain text without a
+ *  year (company names, "Profit and Loss") safely returns null. */
+function parseMonthRangeEnd(label) {
+  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  const yearM = String(label).match(/(\d{4})/);
+  if (!yearM) return null;
+  const lower = String(label).toLowerCase();
+  let bestPos = -1, bestIdx = -1;
+  for (let k = 0; k < months.length; k++) {
+    const pos = lower.lastIndexOf(months[k]);  // latest month mentioned = period end
+    if (pos > bestPos) { bestPos = pos; bestIdx = k; }
+  }
+  if (bestIdx < 0) return null;
+  return `${yearM[1]}-${String(bestIdx + 1).padStart(2, '0')}`;
 }
 
 /**
