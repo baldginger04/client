@@ -240,3 +240,100 @@
   font-size: 13px;
   color: var(--text2);
 }
+
+/* ===================================================================
+   MOBILE / RESPONSIVE
+   Below 820px the fixed-sidebar grid would crush the content column,
+   so the sidebar becomes an off-canvas drawer behind a hamburger and
+   the main content takes the full width.
+   These two elements are hidden on desktop and only revealed in the
+   media query below.
+   =================================================================== */
+.mobile-topbar { display: none; }
+.nav-backdrop  { display: none; }
+
+@media (max-width: 820px) {
+  /* Shell drops to a single column; the sidebar is pulled out of flow. */
+  .shell { display: block; }
+
+  /* --- Top bar: hamburger + logo, fixed to the top of the viewport --- */
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    height: 54px;
+    padding: 0 14px;
+    background: var(--side-bg);
+    border-bottom: 1px solid var(--side-border);
+  }
+  .mobile-topbar img { height: 26px; width: auto; display: block; }
+
+  .hamburger {
+    width: 40px; height: 40px;
+    flex-shrink: 0;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    background: transparent;
+    border: 0;
+    border-radius: var(--r-sm);
+  }
+  .hamburger span {
+    display: block;
+    width: 20px;
+    height: 2px;
+    border-radius: 2px;
+    background: #fff;
+    transition: transform .2s ease, opacity .2s ease;
+  }
+  /* Morph into an X while the drawer is open */
+  #appShell.nav-open .hamburger span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  #appShell.nav-open .hamburger span:nth-child(2) { opacity: 0; }
+  #appShell.nav-open .hamburger span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+  /* --- Sidebar becomes an off-canvas drawer --- */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    width: min(82vw, 320px);
+    transform: translateX(-100%);
+    transition: transform .25s ease;
+    z-index: 60;
+    box-shadow: 0 0 40px rgba(0,0,0,.45);
+  }
+  #appShell.nav-open .sidebar { transform: translateX(0); }
+
+  /* --- Dimmed backdrop behind the open drawer (tap to close) --- */
+  .nav-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+    background: rgba(0,0,0,.5);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .25s ease;
+  }
+  #appShell.nav-open .nav-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* --- Main content: full width, tighter padding --- */
+  .main {
+    padding: 1.25rem 1rem 2rem;
+    max-width: none;
+  }
+  .page-title { font-size: 23px; }
+
+  /* The Prime Sheet table is 9 columns wide — let it scroll inside its
+     card instead of forcing the whole page to scroll sideways. */
+  #pnl-summary-content { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
