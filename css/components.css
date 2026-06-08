@@ -1411,3 +1411,72 @@
   color: var(--text3);
   font-style: italic;
 }
+
+/* ===================================================================
+   PRIME SHEET — trailing metric picker (sits above the full table)
+   =================================================================== */
+.pnl-mp { margin: 0 0 22px; }
+.pnl-mp-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.pnl-mp-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text3);
+  font-weight: 600;
+}
+.pnl-mp-select {
+  flex: 1;
+  min-width: 180px;
+  max-width: 320px;
+  padding: 9px 30px 9px 11px;
+  border: 1px solid var(--border2);
+  border-radius: var(--r-sm);
+  background: var(--bg2);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path fill='%239aa0aa' d='M6 8L0 0h12z'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+}
+.pnl-mp-select:focus { outline: none; border-color: var(--accent); }
+.pnl-mp-windows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+.pnl-mp-card {
+  background: var(--bg3);
+  border-radius: var(--r);
+  padding: 14px 16px;
+}
+.pnl-mp-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.pnl-mp-win { font-size: 12px; color: var(--text2); font-weight: 500; }
+.pnl-mp-chip {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.pnl-mp-big {
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.pnl-mp-sub { font-size: 12px; color: var(--text3); margin-top: 3px; }
