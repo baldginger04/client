@@ -104,6 +104,19 @@
 
   <!-- ================= APP SHELL ================= -->
   <div id="appShell">
+
+    <!-- Mobile top bar (shown only <=820px via CSS). The hamburger toggles
+         the .nav-open class on #appShell, which slides the sidebar in. -->
+    <div class="mobile-topbar">
+      <button class="hamburger" id="navToggle" type="button" aria-label="Open menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+      <img src="assets/Bald-Ginger_Color_HORZ.png" alt="Bald Ginger" />
+    </div>
+
+    <!-- Dimmed overlay behind the open drawer; tapping it closes the menu. -->
+    <div class="nav-backdrop" id="navBackdrop"></div>
+
     <div class="shell">
 
       <!-- SIDEBAR -->
@@ -258,6 +271,41 @@
 
     </div>
   </div>
+
+  <!-- Mobile nav drawer toggle. Plain (non-module) script; runs after the
+       static shell markup is parsed and is independent of main.js. main.js
+       keeps its own #sidebarNav listener for tab switching — these stack. -->
+  <script>
+    (function () {
+      var shell    = document.getElementById('appShell');
+      var toggle   = document.getElementById('navToggle');
+      var backdrop = document.getElementById('navBackdrop');
+      var nav      = document.getElementById('sidebarNav');
+      var client   = document.getElementById('clientSelect');
+      if (!shell || !toggle) return;
+
+      function setOpen(open) {
+        shell.classList.toggle('nav-open', open);
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        toggle.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+        // Lock background scroll only while the drawer is open.
+        document.body.style.overflow = open ? 'hidden' : '';
+      }
+
+      toggle.addEventListener('click', function () {
+        setOpen(!shell.classList.contains('nav-open'));
+      });
+      if (backdrop) backdrop.addEventListener('click', function () { setOpen(false); });
+      // Picking a tab or a client closes the drawer so the content shows.
+      if (nav) nav.addEventListener('click', function (e) {
+        if (e.target.closest('.nav-item')) setOpen(false);
+      });
+      if (client) client.addEventListener('change', function () { setOpen(false); });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') setOpen(false);
+      });
+    })();
+  </script>
 
   <script type="module" src="js/main.js"></script>
 </body>
