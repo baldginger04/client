@@ -225,6 +225,12 @@
   padding: 2rem 2.5rem;
   max-width: 980px;
   width: 100%;
+  /* Grid item: default min-width:auto resolves to the min-content of the
+     widest child. A nowrap P&L table (~2000px) would otherwise force this
+     column past its max-width and widen the whole page, so the table never
+     scrolls inside .xlsx-preview and frozen panes can't pin. min-width:0
+     lets the column shrink so wide tables stay inside their own scroll box. */
+  min-width: 0;
 }
 .page-header {
   margin-bottom: 1.5rem;
