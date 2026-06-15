@@ -460,6 +460,46 @@
 /* NOTE: removed the hardcoded "first row is always bold" rule — real
    formatting now comes from the workbook itself via cellStyles. */
 
+/* ---------- FROZEN PANES (P&L) ----------
+   SheetJS emits every cell as a <td> (no <thead>), so we freeze by position:
+   the first cell of each row (account names) pins to the LEFT, and the
+   detected month-header row (tagged xlsx-row-header in sheetToHTML) pins to
+   the TOP. The .xlsx-preview container already scrolls both directions
+   (overflow:auto; max-height:75vh), which is what sticky positions against.
+   Sticky cells need an OPAQUE background or scrolling content shows through;
+   the box-shadows mark the frozen edges and hide border-collapse seams. */
+
+/* First column — account names stay visible when scrolling across months */
+.xlsx-preview td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--bg2);
+  box-shadow: 2px 0 4px -2px rgba(0, 0, 0, 0.18);
+}
+/* Keep the frozen first cell opaque on tinted rows (subtotal/grandtotal use
+   translucent fills that would otherwise let columns bleed through on scroll).
+   Section rows already paint a solid --bg3 band, so leave those alone. */
+.xlsx-preview tr.xlsx-row-subtotal td:first-child,
+.xlsx-preview tr.xlsx-row-grandtotal td:first-child {
+  background: var(--bg2);
+}
+
+/* Month-header row — stays visible when scrolling down the accounts */
+.xlsx-preview tr.xlsx-row-header td {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg3);
+  font-weight: 600;
+  box-shadow: 0 2px 4px -2px rgba(0, 0, 0, 0.18);
+}
+/* The corner cell (header row × first column) must sit above both planes */
+.xlsx-preview tr.xlsx-row-header td:first-child {
+  left: 0;
+  z-index: 4;
+}
+
 /* Sheet tabs (for xlsx with multiple sheets) */
 .sheet-tabs {
   display: flex;
