@@ -691,6 +691,10 @@ function sheetToHTML(sheet) {
     'Net Income',
   ]);
 
+  // Only the FIRST month-header row gets frozen to the top. This flag makes
+  // sure we tag exactly one row even if month-like text recurs further down.
+  let headerTagged = false;
+
   table = table.replace(/<tr([^>]*)>([\s\S]*?)<\/tr>/g, (full, trAttrs, inner) => {
     // Pull out each <td> in document order so we can analyze and rewrite them.
     const cellMatches = [...inner.matchAll(/<td([^>]*)>([\s\S]*?)<\/td>/g)];
@@ -723,6 +727,19 @@ function sheetToHTML(sheet) {
       // that QBO inserts above its children (e.g. "4900 Discounts and Refunds"
       // sitting above its sub-accounts). De-emphasize.
       extraClass = 'xlsx-row-parent';
+    }
+
+    // Detect the month-header row: a blank label cell whose value cells are
+    // month-year labels ("Jan 2025", "Feb 2025", …). Tag the first such row
+    // so CSS can freeze it to the top on vertical scroll. Require at least two
+    // month-like hits so a stray text cell can't masquerade as the header.
+    if (!extraClass && !headerTagged) {
+      const monthLike = (t) => /^[A-Za-z]{3,9}\.?\s*'?\d{2,4}$/.test(t);
+      const monthHits = valueCells.filter((c) => monthLike(plain(c[2]))).length;
+      if (isBlank(labelText) && monthHits >= 2) {
+        extraClass = 'xlsx-row-header';
+        headerTagged = true;
+      }
     }
 
     // Rewrite each cell:
