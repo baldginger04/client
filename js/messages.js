@@ -80,7 +80,7 @@ function bindOnce() {
   });
   if (attachBtn && fileInput) attachBtn.addEventListener('click', () => fileInput.click());
   if (fileInput) fileInput.addEventListener('change', () => {
-    stageFile('new', fileInput.files && fileInput.files[0]);
+    addFiles('new', fileInput.files);
     fileInput.value = '';
   });
   if (toggle) toggle.addEventListener('change', () => { showResolved = toggle.checked; render(); });
@@ -105,7 +105,7 @@ function onListClick(e) {
   }
 
   const rm = e.target.closest('.qc-staged-remove');
-  if (rm) { stageFile(rm.dataset.card, null); return; }
+  if (rm) { removeStaged(rm.dataset.card, parseInt(rm.dataset.idx, 10)); return; }
 
   const replyBtn = e.target.closest('.qc-reply-send');
   if (replyBtn) { submitReply(replyBtn.dataset.rootId); return; }
@@ -114,7 +114,7 @@ function onListClick(e) {
 function onListChange(e) {
   const fileEl = e.target.closest('.qc-file');
   if (!fileEl) return;
-  stageFile(fileEl.dataset.card, fileEl.files && fileEl.files[0]);
+  addFiles(fileEl.dataset.card, fileEl.files);
   fileEl.value = '';
 }
 
@@ -144,7 +144,7 @@ async function fetchAndRender() {
 }
 
 /** Insert a question (parentId null) or a reply (parentId = root id). */
-async function insertMessage({ body, parentId, att }) {
+async function insertMessage({ body, parentId, atts }) {
   const row = {
     client_id: ctx.clientId,
     author: ctx.author,
@@ -152,15 +152,22 @@ async function insertMessage({ body, parentId, att }) {
     is_team: ctx.isTeam,
     parent_message_id: parentId,
   };
-  if (att) { row.attachment_url = att.path; row.attachment_name = att.name; }
+  if (atts && atts.length) row.attachments = atts;
   const { error } = await sb.from('messages').insert(row);
   if (error) throw error;
+}
+
+/** Upload every staged file; returns an array of { path, name }. */
+async function uploadAll(files) {
+  const out = [];
+  for (const f of (files || [])) out.push(await uploadAttachment(f));
+  return out;
 }
 
 /** Upload a file into the private bucket; returns its storage path + name. */
 async function uploadAttachment(file) {
   const safe = file.name.replace(/[^\w.\-]+/g, '_').slice(-120);
-  const path = `${ctx.clientId}/${Date.now()}-${safe}`;
+  const path = `${ctx.clientId}/${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${safe}`;
   const { error } = await sb.storage.from(BUCKET).upload(path, file, {
     cacheControl: '3600',
     upsert: false,
@@ -193,16 +200,16 @@ async function submitQuestion() {
   if (!ctx.clientId) return;
   const input = $('composerInput');
   const body = (input && input.value || '').trim();
-  const file = staged.get('new') || null;
-  if (!body && !file) return;
+  const files = staged.get('new') || [];
+  if (!body && !files.length) return;
 
   const btn = $('composerSend');
   setBusy(btn, true, 'Asking…');
   try {
-    const att = file ? await uploadAttachment(file) : null;
-    await insertMessage({ body, parentId: null, att });
+    const atts = files.length ? await uploadAll(files) : null;
+    await insertMessage({ body, parentId: null, atts });
     if (input) input.value = '';
-    stageFile('new', null);
+    clearStaged('new');
     await fetchAndRender();
   } catch (err) {
     console.error('submitQuestion failed:', err);
@@ -217,16 +224,16 @@ async function submitReply(rootId) {
   if (!list) return;
   const ta = list.querySelector(`.qc-reply-input[data-root-id="${cssEsc(rootId)}"]`);
   const body = ta ? (ta.value || '').trim() : '';
-  const file = staged.get(rootId) || null;
-  if (!body && !file) return;
+  const files = staged.get(rootId) || [];
+  if (!body && !files.length) return;
 
   const btn = list.querySelector(`.qc-reply-send[data-root-id="${cssEsc(rootId)}"]`);
   setBusy(btn, true, '…');
   try {
-    const att = file ? await uploadAttachment(file) : null;
-    await insertMessage({ body, parentId: rootId, att });
+    const atts = files.length ? await uploadAll(files) : null;
+    await insertMessage({ body, parentId: rootId, atts });
     if (ta) ta.value = '';
-    stageFile(rootId, null);
+    clearStaged(rootId);
     await fetchAndRender();
   } catch (err) {
     console.error('submitReply failed:', err);
@@ -237,26 +244,43 @@ async function submitReply(rootId) {
 }
 
 // ---------------------------------------------------------------------
-// Staged-attachment preview (before send)
+// Staged-attachment preview (before send) — each key holds an array of Files
 // ---------------------------------------------------------------------
-function stageFile(key, file) {
-  if (file) staged.set(key, file); else staged.delete(key);
+function addFiles(key, fileList) {
+  const incoming = fileList ? Array.from(fileList) : [];
+  if (!incoming.length) return;
+  const arr = staged.get(key) || [];
+  incoming.forEach((f) => arr.push(f));
+  staged.set(key, arr);
+  renderStagedPreview(key);
+}
+
+function removeStaged(key, idx) {
+  const arr = staged.get(key) || [];
+  if (idx >= 0 && idx < arr.length) arr.splice(idx, 1);
+  if (arr.length) staged.set(key, arr); else staged.delete(key);
+  renderStagedPreview(key);
+}
+
+function clearStaged(key) {
+  staged.delete(key);
   renderStagedPreview(key);
 }
 
 function renderStagedPreview(key) {
-  const f = staged.get(key);
+  const files = staged.get(key) || [];
   const box = key === 'new'
     ? $('composerAttachPreview')
     : document.querySelector(`.qc-staged[data-card="${cssEsc(key)}"]`);
   if (!box) return;
-  box.style.display = f ? 'flex' : 'none';
-  box.innerHTML = f ? attachChipHtml(key, f.name) : '';
+  box.style.display = files.length ? 'flex' : 'none';
+  box.innerHTML = files.map((f, i) => attachChipHtml(key, f.name, i)).join('');
 }
 
-function attachChipHtml(card, name) {
+function attachChipHtml(card, name, idx) {
   return `<span class="att-chip">📎 ${esc(name)}`
-       + `<button type="button" class="qc-staged-remove" data-card="${esc(card)}" title="Remove">×</button>`
+       + `<button type="button" class="qc-staged-remove" data-card="${esc(card)}"`
+       + ` data-idx="${idx}" title="Remove">×</button>`
        + `</span>`;
 }
 
@@ -275,18 +299,27 @@ function render() {
 
   const roots = cache.filter((m) => !m.parent_message_id);
   const repliesByRoot = groupReplies(cache);
-  roots.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)); // newest first
+  const newestFirst = (a, b) => new Date(b.created_at) - new Date(a.created_at);
 
-  const visible = roots.filter((r) => showResolved || !r.cleared);
+  const open = roots.filter((r) => !r.cleared).sort(newestFirst);
+  const resolved = roots.filter((r) => r.cleared).sort(newestFirst);
 
-  if (!visible.length) {
-    list.innerHTML = `<div class="msg-empty">${
-      showResolved ? 'No questions yet.' : 'No open questions. Ask one above 👆'
-    }</div>`;
-    return;
+  const cardFor = (r) => renderCard(r, repliesByRoot[r.id] || []);
+
+  let html = open.length
+    ? open.map(cardFor).join('')
+    : '<div class="msg-empty">No open questions. Ask one above 👆</div>';
+
+  // Cleared history: only shown when the toggle is on. Rendered as a distinct
+  // section below the open questions so it reads as an archive.
+  if (showResolved) {
+    html += `<div class="resolved-sep">Cleared history${resolved.length ? ` · ${resolved.length}` : ''}</div>`;
+    html += resolved.length
+      ? resolved.map(cardFor).join('')
+      : '<div class="msg-empty">Nothing cleared yet.</div>';
   }
 
-  list.innerHTML = visible.map((r) => renderCard(r, repliesByRoot[r.id] || [])).join('');
+  list.innerHTML = html;
 
   // Restore drafts + any staged reply attachments.
   Object.entries(drafts).forEach(([rootId, val]) => {
@@ -345,7 +378,7 @@ function renderCard(root, replies) {
             <button type="button" class="attach-btn qc-attach" data-card="${esc(root.id)}"
                     title="Attach a screenshot or PDF">📎</button>
             <input type="file" class="qc-file" data-card="${esc(root.id)}"
-                   accept="image/*,.pdf" hidden />
+                   accept="image/*,.pdf" multiple hidden />
             <button type="button" class="btn btn-primary btn-sm qc-reply-send"
                     data-root-id="${esc(root.id)}">Reply</button>
           </div>
@@ -372,19 +405,32 @@ function renderReply(r) {
   `;
 }
 
-/** Placeholder for an attachment; hydrateAttachments() fills in a signed URL
- *  after render. Legacy image_url rows render their public URL directly. */
+/** Render all attachments on a message. New rows carry a JSONB `attachments`
+ *  array of { path, name }; we also honor the legacy single attachment_url and
+ *  the older public image_url. Signed (private-bucket) items render as .att
+ *  placeholders that hydrateAttachments() fills in after render. */
 function attachmentSlot(m) {
+  const items = [];
+  if (Array.isArray(m.attachments)) {
+    m.attachments.forEach((a) => {
+      if (a && a.path) items.push({ path: a.path, name: a.name || 'attachment' });
+    });
+  }
   if (m.attachment_url) {
-    const name = m.attachment_name || 'attachment';
-    const isImg = isImageName(name) ? '1' : '0';
-    return `<div class="att" data-att-path="${esc(m.attachment_url)}"`
-         + ` data-att-name="${esc(name)}" data-att-img="${isImg}"></div>`;
+    items.push({ path: m.attachment_url, name: m.attachment_name || 'attachment' });
   }
+
+  let html = items.map((it) => {
+    const isImg = isImageName(it.name) ? '1' : '0';
+    return `<div class="att" data-att-path="${esc(it.path)}"`
+         + ` data-att-name="${esc(it.name)}" data-att-img="${isImg}"></div>`;
+  }).join('');
+
   if (m.image_url) {
-    return `<div class="att"><img src="${esc(m.image_url)}" alt="attachment" /></div>`;
+    html += `<div class="att"><img src="${esc(m.image_url)}" alt="attachment" /></div>`;
   }
-  return '';
+
+  return html ? `<div class="att-group">${html}</div>` : '';
 }
 
 async function hydrateAttachments() {
