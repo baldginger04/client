@@ -1520,3 +1520,114 @@
   font-variant-numeric: tabular-nums;
 }
 .pnl-mp-sub { font-size: 12px; color: var(--text3); margin-top: 3px; }
+
+/* ===================================================================
+   CLIENT QUESTIONS — threaded Q&A cards, attachments, per-card clear
+   =================================================================== */
+
+/* ---------- Ask-a-question card ---------- */
+.ask-card { margin-bottom: 1.1rem; }
+.ask-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: .6rem;
+}
+.ask-title {
+  font-size: 12px; font-weight: 600; color: var(--text2);
+  text-transform: uppercase; letter-spacing: .08em;
+}
+.show-resolved {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text3); cursor: pointer; user-select: none;
+}
+.show-resolved input { cursor: pointer; }
+
+/* The composer already has the card around it; drop its top divider here. */
+.ask-card .composer { margin-top: 0; padding-top: 0; border-top: none; }
+.composer-actions { display: flex; align-items: center; gap: 8px; }
+
+/* ---------- Paperclip attach button ---------- */
+.attach-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; padding: 0;
+  border: 1px solid var(--border2); border-radius: var(--r-sm);
+  background: var(--bg2); color: var(--text2);
+  font-size: 15px; line-height: 1; cursor: pointer;
+  transition: border-color .12s, color .12s;
+}
+.attach-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---------- Staged attachment chip (pre-send) ---------- */
+.att-preview { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.att-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 6px 4px 10px;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 999px; font-size: 12px; color: var(--text2); max-width: 100%;
+}
+.att-chip button {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--text3); font-size: 15px; line-height: 1; padding: 0 2px;
+}
+.att-chip button:hover { color: var(--red); }
+
+/* ---------- Question card ---------- */
+.qcard {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: .85rem .95rem;
+}
+.qcard-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: .35rem;
+}
+.qcard-head .msg-meta { margin-bottom: 0; flex: 1; min-width: 0; }
+.qc-clear { flex-shrink: 0; white-space: nowrap; }
+
+/* Replies: indented, left-bordered column under the question */
+.qcard-replies {
+  margin: .7rem 0 .25rem;
+  padding-left: .8rem;
+  border-left: 2px solid var(--border);
+  display: flex; flex-direction: column; gap: .6rem;
+}
+.qreply .msg-meta { margin-bottom: .25rem; }
+
+/* Foot: per-question reply composer */
+.qcard-foot {
+  margin-top: .7rem; padding-top: .7rem;
+  border-top: 1px dashed var(--border);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.qc-reply { display: flex; gap: 8px; align-items: flex-end; }
+.qc-reply-input {
+  flex: 1; min-height: 36px; max-height: 120px;
+  padding: 8px 11px; border: 1px solid var(--border2);
+  border-radius: var(--r); font-size: 13px; font-family: inherit;
+  resize: vertical; outline: none; transition: border-color .12s;
+}
+.qc-reply-input:focus { border-color: var(--accent); }
+.qc-reply-actions { display: flex; align-items: center; gap: 6px; }
+.qc-reply-actions .attach-btn { width: 32px; height: 32px; font-size: 14px; }
+
+/* Resolved question card */
+.qcard.is-resolved { opacity: .7; background: #fafbfc; }
+.qcard.is-resolved > .msg-body {
+  text-decoration: line-through;
+  text-decoration-color: var(--text3);
+}
+
+/* ---------- Rendered attachments ---------- */
+.att { margin-top: 8px; }
+.att img {
+  display: block; max-width: 100%; max-height: 280px;
+  border-radius: var(--r-sm); border: 1px solid var(--border);
+}
+.att-file {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 10px; background: var(--bg3);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  font-size: 12px; color: var(--accent); text-decoration: none;
+}
+.att-file:hover { border-color: var(--accent); }
+.att-err { color: var(--text3); cursor: default; }
