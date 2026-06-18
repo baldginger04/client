@@ -145,7 +145,7 @@
           <div class="nav-item"          data-tab="pnl-summary">📋 Prime Sheet</div>
           <div class="nav-item"          data-tab="documents">📁 Documents</div>
           <div class="nav-item"          data-tab="projections">🔮 Projections</div>
-          <div class="nav-item"          data-tab="messages">💬 Client Specific Messages</div>
+          <div class="nav-item"          data-tab="messages">❓ Client Questions</div>
         </nav>
 
         <div class="sidebar-footer">
@@ -251,21 +251,40 @@
         </section>
 
         <!-- ============================================= -->
-        <!-- TAB: MESSAGES (existing, unchanged)            -->
+        <!-- TAB: CLIENT QUESTIONS                          -->
+        <!-- Threaded Q&A. Owned by js/messages.js.         -->
         <!-- ============================================= -->
         <section class="tab-pane" id="tab-messages" style="display:none">
-          <section class="card">
-            <div class="msg-list" id="msgList"></div>
 
+          <!-- Ask a new question. Each send creates a new question card,
+               so you can fire off several in a row. -->
+          <section class="card ask-card">
+            <div class="ask-head">
+              <div class="ask-title">Ask a new question</div>
+              <label class="show-resolved">
+                <input type="checkbox" id="showResolvedToggle" /> Show resolved
+              </label>
+            </div>
             <div class="composer">
               <textarea
                 id="composerInput"
-                placeholder="Write a message… (Enter to send, Shift+Enter for new line)"
+                placeholder="Type your question… (Enter to send, Shift+Enter for new line)"
                 rows="1"
               ></textarea>
-              <button class="btn btn-primary" id="composerSend">Send</button>
+              <div class="composer-actions">
+                <button type="button" class="attach-btn" id="composerAttach"
+                        title="Attach a screenshot or PDF">📎</button>
+                <input type="file" id="composerFile" accept="image/*,.pdf" hidden />
+                <button type="button" class="btn btn-primary" id="composerSend">Ask</button>
+              </div>
             </div>
+            <!-- Staged attachment chip (shown after a file is picked, before send) -->
+            <div class="att-preview" id="composerAttachPreview" style="display:none"></div>
           </section>
+
+          <!-- Question cards render here (question + its replies, grouped). -->
+          <div class="msg-list" id="msgList"></div>
+
         </section>
 
       </main>
