@@ -1,161 +1,456 @@
 // =====================================================================
-// messages.js — load, send, render, and subscribe to client messages
+// messages.js — Client Questions
+// ---------------------------------------------------------------------
+// A threaded Q&A board between the client and the Bald Ginger team.
+//
+//   • Each "question" is a root message (parent_message_id = null).
+//   • Replies hang off a question (parent_message_id = the root's id).
+//   • A question + all its replies render as ONE card.
+//   • Clearing a question cascades to its replies (DB trigger), so the
+//     whole card disappears as a unit. "Show resolved" brings them back;
+//     clearing is reversible (Reopen).
+//   • Either side can ask, reply, attach a screenshot/PDF, and clear.
+//
+// Attachments live in the private "message-attachments" bucket at
+//   <client_id>/<timestamp>-<filename>
+// We store that path in messages.attachment_url and generate a short-lived
+// signed URL at render time (the bucket is private — no public URLs).
+// Legacy rows may still carry a full public URL in image_url; we honor it.
 // =====================================================================
 import { sb } from './config.js';
 
+const BUCKET = 'message-attachments';
+const SIGNED_TTL = 3600; // seconds
+
 let currentChannel = null;
-let currentRenderTarget = null;
-let currentClientId = null;
-let currentUserId = null;
+let reloadTimer = null;
+let bound = false;
 
-/** Load all messages for a client and render them. */
-export async function loadMessages(clientId, listEl, userId) {
-  currentRenderTarget = listEl;
-  currentClientId = clientId;
-  currentUserId = userId;
+// Who/what we're posting as for the active client + tab.
+const ctx = { clientId: null, userId: null, author: 'Unknown', isTeam: false };
 
-  listEl.innerHTML = '<div class="state-msg"><span class="spinner"></span> Loading messages…</div>';
+let showResolved = false;
+let cache = [];            // every message for the client (roots + replies)
+const staged = new Map();  // 'new' | rootId  ->  File (an attachment awaiting send)
+
+const $ = (id) => document.getElementById(id);
+
+// ---------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------
+
+/** Mount the Client Questions tab for a client. */
+export async function loadMessages({ clientId, userId, author, isTeam }) {
+  ctx.clientId = clientId;
+  ctx.userId = userId;
+  ctx.author = author || 'Unknown';
+  ctx.isTeam = !!isTeam;
+
+  staged.clear();
+  bindOnce();
+  resetComposer();
+  cache = [];
+  await fetchAndRender();
+  subscribeRealtime(clientId);
+}
+
+/** Tear down realtime + pending reloads when leaving the tab or logging out. */
+export function unsubscribeMessages() {
+  if (currentChannel) { sb.removeChannel(currentChannel); currentChannel = null; }
+  if (reloadTimer) { clearTimeout(reloadTimer); reloadTimer = null; }
+}
+
+// ---------------------------------------------------------------------
+// Wiring (bound once — the composer + list elements are static in the shell)
+// ---------------------------------------------------------------------
+function bindOnce() {
+  if (bound) return;
+  bound = true;
+
+  const sendBtn = $('composerSend');
+  const input = $('composerInput');
+  const attachBtn = $('composerAttach');
+  const fileInput = $('composerFile');
+  const toggle = $('showResolvedToggle');
+  const list = $('msgList');
+
+  if (sendBtn) sendBtn.addEventListener('click', submitQuestion);
+  if (input) input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitQuestion(); }
+  });
+  if (attachBtn && fileInput) attachBtn.addEventListener('click', () => fileInput.click());
+  if (fileInput) fileInput.addEventListener('change', () => {
+    stageFile('new', fileInput.files && fileInput.files[0]);
+    fileInput.value = '';
+  });
+  if (toggle) toggle.addEventListener('change', () => { showResolved = toggle.checked; render(); });
+
+  // Delegated handlers for the dynamically-rendered question cards.
+  if (list) {
+    list.addEventListener('click', onListClick);
+    list.addEventListener('change', onListChange);
+  }
+}
+
+function onListClick(e) {
+  const clearBtn = e.target.closest('.qc-clear');
+  if (clearBtn) { toggleCleared(clearBtn.dataset.rootId, clearBtn.dataset.to === '1'); return; }
+
+  const attachBtn = e.target.closest('.qc-attach');
+  if (attachBtn) {
+    const card = attachBtn.dataset.card;
+    const fileEl = e.currentTarget.querySelector(`.qc-file[data-card="${cssEsc(card)}"]`);
+    if (fileEl) fileEl.click();
+    return;
+  }
+
+  const rm = e.target.closest('.qc-staged-remove');
+  if (rm) { stageFile(rm.dataset.card, null); return; }
+
+  const replyBtn = e.target.closest('.qc-reply-send');
+  if (replyBtn) { submitReply(replyBtn.dataset.rootId); return; }
+}
+
+function onListChange(e) {
+  const fileEl = e.target.closest('.qc-file');
+  if (!fileEl) return;
+  stageFile(fileEl.dataset.card, fileEl.files && fileEl.files[0]);
+  fileEl.value = '';
+}
+
+// ---------------------------------------------------------------------
+// Data
+// ---------------------------------------------------------------------
+async function fetchAndRender() {
+  const list = $('msgList');
+  if (!list) return;
+  if (!cache.length) {
+    list.innerHTML = '<div class="state-msg"><span class="spinner"></span> Loading questions…</div>';
+  }
 
   const { data, error } = await sb
     .from('messages')
     .select('*')
-    .eq('client_id', clientId)
+    .eq('client_id', ctx.clientId)
     .order('created_at', { ascending: true });
 
   if (error) {
-    listEl.innerHTML = `<div class="state-msg error">Couldn't load messages. ${escape(error.message)}</div>`;
+    list.innerHTML = `<div class="state-msg error">Couldn't load questions. ${esc(error.message)}</div>`;
     return;
   }
 
-  renderAll(data || []);
-  subscribeRealtime(clientId);
+  cache = data || [];
+  render();
 }
 
-/** Send a new message in the current client thread. */
-export async function sendMessage({ clientId, author, body, isTeam }) {
-  const trimmed = (body || '').trim();
-  if (!trimmed) return;
+/** Insert a question (parentId null) or a reply (parentId = root id). */
+async function insertMessage({ body, parentId, att }) {
+  const row = {
+    client_id: ctx.clientId,
+    author: ctx.author,
+    body: body || '',
+    is_team: ctx.isTeam,
+    parent_message_id: parentId,
+  };
+  if (att) { row.attachment_url = att.path; row.attachment_name = att.name; }
+  const { error } = await sb.from('messages').insert(row);
+  if (error) throw error;
+}
 
-  const { error } = await sb.from('messages').insert({
-    client_id: clientId,
-    author,
-    body: trimmed,
-    is_team: isTeam,
+/** Upload a file into the private bucket; returns its storage path + name. */
+async function uploadAttachment(file) {
+  const safe = file.name.replace(/[^\w.\-]+/g, '_').slice(-120);
+  const path = `${ctx.clientId}/${Date.now()}-${safe}`;
+  const { error } = await sb.storage.from(BUCKET).upload(path, file, {
+    cacheControl: '3600',
+    upsert: false,
+    contentType: file.type || undefined,
   });
   if (error) throw error;
-  // realtime will pick it up and render — but for snappier UX we could
-  // optimistically append. Keeping it simple for now.
+  return { path, name: file.name };
 }
 
-/** Subscribe to realtime inserts AND updates for this client's messages.
- *  Updates matter because Triple users can mark messages cleared/uncleared,
- *  and the portal should reflect that state change without a refresh. */
-function subscribeRealtime(clientId) {
-  if (currentChannel) {
-    sb.removeChannel(currentChannel);
-    currentChannel = null;
-  }
+async function toggleCleared(rootId, toCleared) {
+  // Optimistic: flip the root + its replies in the cache and re-render now.
+  // The DB trigger performs the same cascade server-side.
+  cache.forEach((m) => {
+    if (m.id === rootId || m.parent_message_id === rootId) m.cleared = toCleared;
+  });
+  render();
 
-  currentChannel = sb
-    .channel(`messages:client:${clientId}`)
-    .on(
-      'postgres_changes',
-      {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'messages',
-        filter: `client_id=eq.${clientId}`,
-      },
-      (payload) => appendMessage(payload.new)
-    )
-    .on(
-      'postgres_changes',
-      {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'messages',
-        filter: `client_id=eq.${clientId}`,
-      },
-      (payload) => updateMessage(payload.new)
-    )
-    .subscribe();
+  const { error } = await sb.from('messages').update({ cleared: toCleared }).eq('id', rootId);
+  if (error) {
+    console.error('toggleCleared failed:', error);
+    alert('Could not update that question. ' + (error.message || ''));
+    await fetchAndRender(); // resync with the truth
+  }
 }
 
-/** Stop listening for realtime updates. */
-export function unsubscribeMessages() {
-  if (currentChannel) {
-    sb.removeChannel(currentChannel);
-    currentChannel = null;
+// ---------------------------------------------------------------------
+// Submit handlers
+// ---------------------------------------------------------------------
+async function submitQuestion() {
+  if (!ctx.clientId) return;
+  const input = $('composerInput');
+  const body = (input && input.value || '').trim();
+  const file = staged.get('new') || null;
+  if (!body && !file) return;
+
+  const btn = $('composerSend');
+  setBusy(btn, true, 'Asking…');
+  try {
+    const att = file ? await uploadAttachment(file) : null;
+    await insertMessage({ body, parentId: null, att });
+    if (input) input.value = '';
+    stageFile('new', null);
+    await fetchAndRender();
+  } catch (err) {
+    console.error('submitQuestion failed:', err);
+    alert('Could not post your question. ' + (err.message || ''));
+  } finally {
+    setBusy(btn, false, 'Ask');
   }
+}
+
+async function submitReply(rootId) {
+  const list = $('msgList');
+  if (!list) return;
+  const ta = list.querySelector(`.qc-reply-input[data-root-id="${cssEsc(rootId)}"]`);
+  const body = ta ? (ta.value || '').trim() : '';
+  const file = staged.get(rootId) || null;
+  if (!body && !file) return;
+
+  const btn = list.querySelector(`.qc-reply-send[data-root-id="${cssEsc(rootId)}"]`);
+  setBusy(btn, true, '…');
+  try {
+    const att = file ? await uploadAttachment(file) : null;
+    await insertMessage({ body, parentId: rootId, att });
+    if (ta) ta.value = '';
+    stageFile(rootId, null);
+    await fetchAndRender();
+  } catch (err) {
+    console.error('submitReply failed:', err);
+    alert('Could not post your reply. ' + (err.message || ''));
+  } finally {
+    setBusy(btn, false, 'Reply');
+  }
+}
+
+// ---------------------------------------------------------------------
+// Staged-attachment preview (before send)
+// ---------------------------------------------------------------------
+function stageFile(key, file) {
+  if (file) staged.set(key, file); else staged.delete(key);
+  renderStagedPreview(key);
+}
+
+function renderStagedPreview(key) {
+  const f = staged.get(key);
+  const box = key === 'new'
+    ? $('composerAttachPreview')
+    : document.querySelector(`.qc-staged[data-card="${cssEsc(key)}"]`);
+  if (!box) return;
+  box.style.display = f ? 'flex' : 'none';
+  box.innerHTML = f ? attachChipHtml(key, f.name) : '';
+}
+
+function attachChipHtml(card, name) {
+  return `<span class="att-chip">📎 ${esc(name)}`
+       + `<button type="button" class="qc-staged-remove" data-card="${esc(card)}" title="Remove">×</button>`
+       + `</span>`;
 }
 
 // ---------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------
+function render() {
+  const list = $('msgList');
+  if (!list) return;
 
-function renderAll(messages) {
-  if (!currentRenderTarget) return;
-  if (!messages.length) {
-    currentRenderTarget.innerHTML = '<div class="msg-empty">No messages yet. Say hi 👋</div>';
+  // Preserve any half-typed replies before we replace the DOM.
+  const drafts = {};
+  list.querySelectorAll('.qc-reply-input').forEach((ta) => {
+    if (ta.value.trim()) drafts[ta.dataset.rootId] = ta.value;
+  });
+
+  const roots = cache.filter((m) => !m.parent_message_id);
+  const repliesByRoot = groupReplies(cache);
+  roots.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)); // newest first
+
+  const visible = roots.filter((r) => showResolved || !r.cleared);
+
+  if (!visible.length) {
+    list.innerHTML = `<div class="msg-empty">${
+      showResolved ? 'No questions yet.' : 'No open questions. Ask one above 👆'
+    }</div>`;
     return;
   }
-  currentRenderTarget.innerHTML = messages.map(renderOne).join('');
-  currentRenderTarget.scrollTop = currentRenderTarget.scrollHeight;
+
+  list.innerHTML = visible.map((r) => renderCard(r, repliesByRoot[r.id] || [])).join('');
+
+  // Restore drafts + any staged reply attachments.
+  Object.entries(drafts).forEach(([rootId, val]) => {
+    const ta = list.querySelector(`.qc-reply-input[data-root-id="${cssEsc(rootId)}"]`);
+    if (ta) ta.value = val;
+  });
+  staged.forEach((_f, key) => { if (key !== 'new') renderStagedPreview(key); });
+
+  hydrateAttachments();
 }
 
-function appendMessage(msg) {
-  if (!currentRenderTarget) return;
-  // If the list is currently showing the empty state, clear it first.
-  const empty = currentRenderTarget.querySelector('.msg-empty');
-  if (empty) currentRenderTarget.innerHTML = '';
-  currentRenderTarget.insertAdjacentHTML('beforeend', renderOne(msg));
-  currentRenderTarget.scrollTop = currentRenderTarget.scrollHeight;
+function groupReplies(all) {
+  const map = {};
+  all.forEach((m) => {
+    if (m.parent_message_id) (map[m.parent_message_id] ||= []).push(m);
+  });
+  Object.values(map).forEach((arr) =>
+    arr.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+  );
+  return map;
 }
 
-/** Replace a message in place when an UPDATE comes in via realtime.
- *  Most commonly: the team marked it cleared/uncleared in Triple. We swap
- *  the DOM node so the resolved styling appears/disappears without scrolling
- *  the chat back to the bottom or re-rendering anything else. */
-function updateMessage(msg) {
-  if (!currentRenderTarget) return;
-  const existing = currentRenderTarget.querySelector(`[data-msg-id="${CSS.escape(String(msg.id))}"]`);
-  if (!existing) return;
-  // Build the new node from HTML and swap it in. Using a template div as an
-  // adapter since insertAdjacentHTML doesn't replace, only insert.
-  const tpl = document.createElement('template');
-  tpl.innerHTML = renderOne(msg).trim();
-  const fresh = tpl.content.firstElementChild;
-  if (fresh) existing.replaceWith(fresh);
-}
+function renderCard(root, replies) {
+  const author = root.author || 'Unknown';
+  const teamBadge = root.is_team ? '<span class="badge-team">Team</span>' : '';
+  const resolved = !!root.cleared;
+  const resolvedBadge = resolved ? '<span class="badge-resolved">✓ Resolved</span>' : '';
+  const clearLabel = resolved ? '↩ Reopen' : '✓ Clear';
+  const clearTo = resolved ? '0' : '1';
 
-function renderOne(msg) {
-  const author = msg.author || 'Unknown';
-  const teamBadge = msg.is_team ? '<span class="badge-team">Team</span>' : '';
-  // A "cleared" message is one the team has marked as resolved over in Triple.
-  // The portal can't mark or unmark — clients only see the visual state. We
-  // fade the card and add a small "Resolved" badge so they know the team
-  // considers the matter handled.
-  const resolvedClass = msg.cleared ? ' is-resolved' : '';
-  const resolvedBadge = msg.cleared ? '<span class="badge-resolved">✓ Resolved</span>' : '';
-  const img = msg.image_url
-    ? `<img src="${escape(msg.image_url)}" alt="attachment" />`
-    : '';
+  const repliesHtml = replies.map(renderReply).join('');
+
   return `
-    <div class="msg${resolvedClass}" data-msg-id="${escape(msg.id)}">
-      <div class="msg-meta">
-        ${avHtml(author)}
-        <span class="msg-author">${escape(author)}</span>
-        ${teamBadge}
-        ${resolvedBadge}
-        <span class="msg-time">${formatTime(msg.created_at)}</span>
+    <div class="qcard${resolved ? ' is-resolved' : ''}" data-root-id="${esc(root.id)}">
+      <div class="qcard-head">
+        <div class="msg-meta">
+          ${avHtml(author)}
+          <span class="msg-author">${esc(author)}</span>
+          ${teamBadge}
+          ${resolvedBadge}
+          <span class="msg-time">${formatTime(root.created_at)}</span>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm qc-clear"
+                data-root-id="${esc(root.id)}" data-to="${clearTo}">${clearLabel}</button>
       </div>
-      <div class="msg-body">${escape(msg.body || '')}${img}</div>
+
+      <div class="msg-body">${esc(root.body || '')}${attachmentSlot(root)}</div>
+
+      ${repliesHtml ? `<div class="qcard-replies">${repliesHtml}</div>` : ''}
+
+      <div class="qcard-foot">
+        <div class="qc-reply">
+          <textarea class="qc-reply-input" data-root-id="${esc(root.id)}" rows="1"
+                    placeholder="Write a reply…"></textarea>
+          <div class="qc-reply-actions">
+            <button type="button" class="attach-btn qc-attach" data-card="${esc(root.id)}"
+                    title="Attach a screenshot or PDF">📎</button>
+            <input type="file" class="qc-file" data-card="${esc(root.id)}"
+                   accept="image/*,.pdf" hidden />
+            <button type="button" class="btn btn-primary btn-sm qc-reply-send"
+                    data-root-id="${esc(root.id)}">Reply</button>
+          </div>
+        </div>
+        <div class="att-preview qc-staged" data-card="${esc(root.id)}" style="display:none"></div>
+      </div>
     </div>
   `;
 }
 
-/** Avatar color class for a given name. Mirrors Triple's avClass() exactly so
- *  the same person shows up in the same color across both apps. */
+function renderReply(r) {
+  const author = r.author || 'Unknown';
+  const teamBadge = r.is_team ? '<span class="badge-team">Team</span>' : '';
+  return `
+    <div class="qreply">
+      <div class="msg-meta">
+        ${avHtml(author)}
+        <span class="msg-author">${esc(author)}</span>
+        ${teamBadge}
+        <span class="msg-time">${formatTime(r.created_at)}</span>
+      </div>
+      <div class="msg-body">${esc(r.body || '')}${attachmentSlot(r)}</div>
+    </div>
+  `;
+}
+
+/** Placeholder for an attachment; hydrateAttachments() fills in a signed URL
+ *  after render. Legacy image_url rows render their public URL directly. */
+function attachmentSlot(m) {
+  if (m.attachment_url) {
+    const name = m.attachment_name || 'attachment';
+    const isImg = isImageName(name) ? '1' : '0';
+    return `<div class="att" data-att-path="${esc(m.attachment_url)}"`
+         + ` data-att-name="${esc(name)}" data-att-img="${isImg}"></div>`;
+  }
+  if (m.image_url) {
+    return `<div class="att"><img src="${esc(m.image_url)}" alt="attachment" /></div>`;
+  }
+  return '';
+}
+
+async function hydrateAttachments() {
+  const slots = Array.from(document.querySelectorAll('.att[data-att-path]'));
+  await Promise.all(slots.map(async (el) => {
+    const path = el.getAttribute('data-att-path');
+    const name = el.getAttribute('data-att-name') || 'attachment';
+    const isImg = el.getAttribute('data-att-img') === '1';
+    el.removeAttribute('data-att-path'); // don't re-hydrate on next pass
+    try {
+      const { data, error } = await sb.storage.from(BUCKET).createSignedUrl(path, SIGNED_TTL);
+      if (error || !data) throw error || new Error('no signed url');
+      const url = data.signedUrl;
+      el.innerHTML = isImg
+        ? `<a href="${esc(url)}" target="_blank" rel="noopener"><img src="${esc(url)}" alt="${esc(name)}" /></a>`
+        : `<a class="att-file" href="${esc(url)}" target="_blank" rel="noopener">📎 ${esc(name)}</a>`;
+    } catch (err) {
+      console.error('attachment signing failed:', err);
+      el.innerHTML = `<span class="att-file att-err">📎 ${esc(name)} (unavailable)</span>`;
+    }
+  }));
+}
+
+// ---------------------------------------------------------------------
+// Realtime — coalesce bursts (e.g. a clear cascade fires many UPDATEs)
+// into a single debounced reload.
+// ---------------------------------------------------------------------
+function subscribeRealtime(clientId) {
+  if (currentChannel) { sb.removeChannel(currentChannel); currentChannel = null; }
+  currentChannel = sb
+    .channel(`messages:client:${clientId}`)
+    .on('postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'messages', filter: `client_id=eq.${clientId}` },
+      scheduleReload)
+    .on('postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'messages', filter: `client_id=eq.${clientId}` },
+      scheduleReload)
+    .subscribe();
+}
+
+function scheduleReload() {
+  if (reloadTimer) clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(() => { reloadTimer = null; fetchAndRender(); }, 200);
+}
+
+// ---------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------
+function resetComposer() {
+  const input = $('composerInput');
+  if (input) input.value = '';
+  const box = $('composerAttachPreview');
+  if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+  const toggle = $('showResolvedToggle');
+  if (toggle) toggle.checked = false;
+  showResolved = false;
+}
+
+function setBusy(btn, busy, label) {
+  if (!btn) return;
+  btn.disabled = busy;
+  if (busy) btn.innerHTML = `<span class="spinner"></span> ${esc(label)}`;
+  else btn.textContent = label;
+}
+
+/** Avatar color class — mirrors Triple's avClass() so people match across apps. */
 function avClass(name) {
   if (!name) return 'av-default';
   if (name.includes('Ed')) return 'av-ed';
@@ -165,19 +460,10 @@ function avClass(name) {
   return 'av-default';
 }
 
-/** Render an avatar circle with up to 2-letter initials for the given name.
- *  e.g. "Ed Hattrup" -> "EH" inside a colored circle. */
 function avHtml(name) {
   if (!name) return '';
-  const initials = name.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
-  return `<span class="msg-avatar ${avClass(name)}">${escape(initials)}</span>`;
-}
-
-function inferMine(msg) {
-  // Kept as a no-op for now in case other code references it. Card-style
-  // messages don't differentiate by sender on the layout level; the "Team"
-  // badge is the visual cue for who's who. Safe to delete in a future pass.
-  return false;
+  const initials = name.split(' ').map((w) => w[0]).join('').substring(0, 2).toUpperCase();
+  return `<span class="msg-avatar ${avClass(name)}">${esc(initials)}</span>`;
 }
 
 function formatTime(iso) {
@@ -185,15 +471,21 @@ function formatTime(iso) {
   const d = new Date(iso);
   const today = new Date();
   const sameDay = d.toDateString() === today.toDateString();
-  if (sameDay) {
-    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  }
+  if (sameDay) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
        + ' · '
        + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-function escape(str) {
+function isImageName(n) {
+  return /\.(png|jpe?g|gif|webp|bmp|heic|heif|svg)$/i.test(n || '');
+}
+
+function cssEsc(s) {
+  return (window.CSS && CSS.escape) ? CSS.escape(String(s)) : String(s).replace(/"/g, '\\"');
+}
+
+function esc(str) {
   return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

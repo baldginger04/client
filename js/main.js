@@ -3,7 +3,7 @@
 // =====================================================================
 import { sb, LAST_CLIENT_KEY } from './config.js';
 import { signIn, signOut, loadUserContext, onAuthChange, sendPasswordReset, updatePassword } from './auth.js';
-import { loadMessages, sendMessage, unsubscribeMessages } from './messages.js';
+import { loadMessages, unsubscribeMessages } from './messages.js';
 import { mountFinancials, unmountFinancials } from './financials.js';
 // KPI Dashboard now renders P&L trend charts (Phase 2 step 5). The old
 // kpi.js (Prime Sheet via SheetJS) is no longer used.
@@ -249,15 +249,6 @@ function bindAppShell() {
     if (!TABS.includes(next) || next === state.currentTab) return;
     await switchTab(next);
   });
-
-  // Composer (messages)
-  $('composerSend').addEventListener('click', handleSend);
-  $('composerInput').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  });
 }
 
 function populateClientSwitcher() {
@@ -297,7 +288,7 @@ const TAB_TITLES = {
   'pnl-summary': { title: 'Prime Sheet',              sub: 'Current month vs prior month and same month last year' },
   documents:   { title: 'Documents',                  sub: 'W-9s, voided checks, tax documents, and other long-lived records' },
   projections: { title: 'Projections',                sub: 'Forward-looking forecasts' },
-  messages:    { title: 'Client Specific Messages',   sub: 'Conversation with the Bald Ginger team' },
+  messages:    { title: 'Client Questions',          sub: 'Questions and answers with the Bald Ginger team' },
 };
 
 async function switchTab(next) {
@@ -364,7 +355,12 @@ async function mountCurrentTab() {
     } else if (t === 'documents') {
       await mountDocuments({ clientId, isTeam: !!state.profile.is_team, userId: state.user.id });
     } else if (t === 'messages') {
-      await loadMessages(clientId, $('msgList'), state.user.id);
+      await loadMessages({
+        clientId,
+        userId: state.user.id,
+        author: state.profile.full_name || state.profile.email,
+        isTeam: !!state.profile.is_team,
+      });
     }
     // projections: nothing to mount; placeholder "coming soon" card.
   } catch (err) {
@@ -384,32 +380,6 @@ function unmountCurrentTab() {
     else if (t === 'messages') unsubscribeMessages();
   } catch (err) {
     console.error(`unmount(${t}) failed:`, err);
-  }
-}
-
-// ---------------------------------------------------------------------
-// Messages (existing logic kept for the messages tab)
-// ---------------------------------------------------------------------
-async function handleSend() {
-  const input = $('composerInput');
-  const body = input.value.trim();
-  if (!body || !state.currentClientId) return;
-
-  const btn = $('composerSend');
-  btn.disabled = true;
-  try {
-    await sendMessage({
-      clientId: state.currentClientId,
-      author: state.profile.full_name || state.profile.email,
-      body,
-      isTeam: !!state.profile.is_team,
-    });
-    input.value = '';
-  } catch (err) {
-    console.error('sendMessage failed:', err);
-    alert('Could not send your message. ' + (err.message || ''));
-  } finally {
-    btn.disabled = false;
   }
 }
 
