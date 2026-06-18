@@ -1631,3 +1631,21 @@
 }
 .att-file:hover { border-color: var(--accent); }
 .att-err { color: var(--text3); cursor: default; }
+
+/* ---------- Multiple attachments + cleared-history section ---------- */
+/* Attachments render in a wrapping row so several thumbnails/files sit
+   side by side instead of stacking full-width. */
+.att-group { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.att-group .att { margin-top: 0; }
+.att-group .att img { max-height: 200px; width: auto; }
+
+/* Divider that introduces the cleared-history archive below open questions. */
+.resolved-sep {
+  display: flex; align-items: center; gap: 10px;
+  margin: 1.5rem 0 .25rem;
+  font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text3);
+}
+.resolved-sep::before, .resolved-sep::after {
+  content: ""; flex: 1; height: 1px; background: var(--border);
+}
