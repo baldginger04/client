@@ -8,16 +8,16 @@
   align-items: center;
   justify-content: center;
   min-height: 100vh;
-  background: #0d0d0b;
+  background: #1B2A4B;
 }
 
 .login-card {
   width: 400px;
   padding: 2.5rem;
-  background: #111110;
-  border: 1px solid #2a2a28;
+  background: #142339;
+  border: 1px solid rgba(255,255,255,.10);
   border-radius: var(--r-lg);
-  box-shadow: var(--shadow-lg);
+  box-shadow: 0 8px 60px rgba(0,0,0,.45);
 }
 
 .login-logo {
@@ -48,10 +48,10 @@
 .field input {
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid #333330;
+  border: 1px solid rgba(255,255,255,.14);
   border-radius: var(--r-sm);
   font-size: 14px;
-  background: #1a1a18;
+  background: rgba(255,255,255,.045);
   color: white;
   outline: none;
   transition: border-color .15s;
