@@ -28,6 +28,7 @@ const HM = {
   prime:  { id: 'h_prime',  label: 'Prime Cost',    kind: 'prime', pctBase: 'TOTAL_INCOME', dir: 'down', noun: 'COGS + labor' },
   income: { id: 'h_income', label: 'Total Income',  kind: 'total', which: 'income', pctBase: null, dir: 'up', noun: 'total income' },
   comps:  { id: 'h_comps',  label: 'Comps %',       kind: 'comps', pctBase: null, dir: 'down', noun: 'comps & discounts' },
+  grossmargin: { id: 'h_grossmargin', label: 'Gross Margin', kind: 'grossmargin', pctBase: null, dir: 'up', noun: 'gross margin' },
 };
 
 const RESTAURANT_TEMPLATE = {
@@ -134,9 +135,58 @@ const ENTERTAINMENT_TEMPLATE = {
   headline: [HM.food, HM.bev, HM.labor, HM.comps, HM.income],
 };
 
+// Market / grocery (e.g. Tiny Grocer). Department-margin layout: each row is
+// a department shown as Sales $ with its gross Margin % — the native retail
+// KPI — rather than restaurant cost %s. Hybrid stores (a market with a
+// full restaurant, e.g. Hyde Park) populate the Restaurant — * rows too;
+// pure-retail stores auto-hide them. Labor is tracked as Labor/Sales.
+const MARKET_TEMPLATE = {
+  sections: [
+    {
+      title: 'Department Margins', kind: 'departments',
+      rows: [
+        { label: 'Deli & Bakery',        sales: 'deli_sales',       cogs: 'deli_cogs' },
+        { label: 'Cafe',                 sales: 'cafe_sales',       cogs: 'cafe_cogs' },
+        { label: 'Grocery',              sales: 'grocery_sales',    cogs: 'grocery_cogs' },
+        { label: 'Produce & Floral',     sales: 'produce_sales',    cogs: 'produce_cogs' },
+        { label: 'Cheese & Charcuterie', sales: 'cheese_sales',     cogs: 'cheese_cogs' },
+        { label: 'Meat & Seafood',       sales: 'meat_sales',       cogs: 'meat_cogs' },
+        { label: 'Body Care & Health',   sales: 'bodycare_sales',   cogs: 'bodycare_cogs' },
+        { label: 'Housewares & Other',   sales: 'housewares_sales', cogs: 'housewares_cogs' },
+        { label: 'Smoke (CBD/Tobacco)',  sales: 'smoke_sales',      cogs: 'smoke_cogs' },
+        { label: 'Beer & Cider',         sales: 'beer_sales',       cogs: 'beer_cogs' },
+        { label: 'Wine',                 sales: 'wine_sales',       cogs: 'wine_cogs' },
+        { label: 'Restaurant — Food',    sales: 'food_sales',       cogs: 'food_cogs' },
+        { label: 'Restaurant — Liquor',  sales: 'liquor_sales',     cogs: 'liquor_cogs' },
+        { label: 'Restaurant — N/A Bev', sales: 'na_bev_sales',     cogs: 'na_bev_cogs' },
+        { label: 'Channels & Other',     sales: 'other_sales',      cogs: null },
+        { label: 'Comps & Discounts',    sales: 'discounts',        cogs: null },
+      ],
+      subtotal: { label: 'Total Sales / Blended Margin', favorableDirection: 'up' },
+    },
+    {
+      title: 'Labor', role: 'labor',
+      rows: [
+        { key: 'labor_management', label: 'Management',     pctBase: 'TOTAL_INCOME' },
+        { key: 'labor_other',      label: 'Staff',          pctBase: 'TOTAL_INCOME' },
+        { key: 'labor_boh',        label: 'Kitchen / Deli', pctBase: 'TOTAL_INCOME' },
+        { key: 'labor_foh',        label: 'Front / Clerks', pctBase: 'TOTAL_INCOME' },
+        { key: 'labor_benefits',   label: 'Benefits',       pctBase: 'TOTAL_INCOME' },
+        { key: 'payroll_taxes',    label: 'Payroll Taxes',  pctBase: 'TOTAL_INCOME' },
+      ],
+      subtotal: { label: 'Total Labor', favorableDirection: 'down', pctBase: 'TOTAL_INCOME' },
+    },
+  ],
+  computed: [
+    { label: 'Gross Profit', compute: (s) => s.totals.income - s.totals.cogs, favorableDirection: 'up', isPct: false, pctBase: 'TOTAL_INCOME' },
+  ],
+  headline: [HM.grossmargin, HM.labor, HM.income],
+};
+
 const TEMPLATES = {
   restaurant:    RESTAURANT_TEMPLATE,
   entertainment: ENTERTAINMENT_TEMPLATE,
+  market:        MARKET_TEMPLATE,
 };
 
 // Active template for the client currently mounted (set in mountPnlSummary).
@@ -299,7 +349,14 @@ function computePct(value, pctBase, periodData, periodTotals) {
 function sectionTotals(data) {
   const t = { income: 0, cogs: 0, labor: 0 };
   for (const section of activeTemplate.sections) {
-    for (const r of section.rows) t[section.role] += (data[r.key] || 0);
+    if (section.kind === 'departments') {
+      for (const r of section.rows) {
+        t.income += (data[r.sales] || 0);
+        if (r.cogs) t.cogs += (data[r.cogs] || 0);
+      }
+    } else {
+      for (const r of section.rows) t[section.role] += (data[r.key] || 0);
+    }
   }
   return t;
 }
@@ -316,6 +373,14 @@ function buildMetricList() {
   const headline = activeTemplate.headline;
   const lines = [];
   activeTemplate.sections.forEach((section) => {
+    if (section.kind === 'departments') {
+      section.rows.forEach((row) => {
+        if (!row.cogs) return;  // channels/discounts have no margin
+        lines.push({ id: 'k_' + row.sales, group: 'Department Margin', label: row.label,
+          kind: 'margin', sales: row.sales, cogs: row.cogs, dir: 'up', noun: row.label + ' margin' });
+      });
+      return;
+    }
     const dir = section.title === 'Sales' ? 'up' : 'down';
     section.rows.forEach((row) => {
       lines.push({ id: 'k_' + row.key, group: section.title, label: row.label,
@@ -380,6 +445,15 @@ function metricValue(metric, win) {
       const value = Math.abs(disc);
       const gross = (totals.income || 0) - disc;
       return { value, pct: gross ? (value / gross) * 100 : null };
+    }
+    case 'margin': {
+      const sales = data[metric.sales] || 0;
+      const cogs  = data[metric.cogs] || 0;
+      return { value: sales, pct: sales ? ((sales - cogs) / sales) * 100 : null };
+    }
+    case 'grossmargin': {
+      const value = (totals.income || 0) - (totals.cogs || 0);
+      return { value, pct: totals.income ? (value / totals.income) * 100 : null };
     }
     default: return { value: 0, pct: null };
   }
@@ -518,6 +592,56 @@ function renderTable() {
     </thead>`;
 
   const sectionHtml = activeTemplate.sections.map((section) => {
+    // ── Department-margin layout (market template) ──────────
+    // Each row: a department's Sales $ with its gross Margin % in the %
+    // column. Rows without a cogs key (channels, discounts) show no margin.
+    // Subtotal is total sales with the blended gross margin.
+    if (section.kind === 'departments') {
+      const margin = (s, c) => (s ? ((s - (c || 0)) / s) * 100 : null);
+      const rowsHtml = section.rows.map((row) => {
+        const cS = cur[row.sales] || 0;
+        const pS = pri ? (pri[row.sales] || 0) : null;
+        const yS = yoyData ? (yoyData[row.sales] || 0) : null;
+        if (cS === 0 && (pS === null || pS === 0) && (yS === null || yS === 0)) return '';
+        const hc = !!row.cogs;
+        const cM = hc ? margin(cS, cur[row.cogs] || 0) : null;
+        const pM = (hc && pri)     ? margin(pS, pri[row.cogs] || 0) : null;
+        const yM = (hc && yoyData) ? margin(yS, yoyData[row.cogs] || 0) : null;
+        const rowDir = row.sales === 'discounts' ? 'down' : 'up';
+        return `<tr class="pnl-sum-row pnl-sum-drillable" data-category="${row.sales}" data-label="${escapeAttr(row.label)}">
+          <td class="pnl-sum-acct">${row.label}</td>
+          <td class="pnl-sum-num">${fmtMoney(cS)}</td>
+          <td class="pnl-sum-num pnl-sum-pct">${fmtPct(cM)}</td>
+          <td class="pnl-sum-num">${fmtMoney(pS)}</td>
+          <td class="pnl-sum-num pnl-sum-pct">${fmtPct(pM)}</td>
+          <td class="pnl-sum-num">${fmtVariance(cS, pS, rowDir)}</td>
+          <td class="pnl-sum-num">${fmtMoney(yS)}</td>
+          <td class="pnl-sum-num pnl-sum-pct">${fmtPct(yM)}</td>
+          <td class="pnl-sum-num">${fmtVariance(cS, yS, rowDir)}</td>
+        </tr>`;
+      }).join('');
+      const blended = (t) => (t && t.income ? ((t.income - t.cogs) / t.income) * 100 : null);
+      const cT = totals.current.income;
+      const pT = totals.prior ? totals.prior.income : null;
+      const yT = totals.yoy ? totals.yoy.income : null;
+      const subtotalHtml = `<tr class="pnl-sum-subtotal">
+        <td class="pnl-sum-acct">${section.subtotal.label}</td>
+        <td class="pnl-sum-num">${fmtMoney(cT)}</td>
+        <td class="pnl-sum-num pnl-sum-pct">${fmtPct(blended(totals.current))}</td>
+        <td class="pnl-sum-num">${fmtMoney(pT)}</td>
+        <td class="pnl-sum-num pnl-sum-pct">${fmtPct(totals.prior ? blended(totals.prior) : null)}</td>
+        <td class="pnl-sum-num">${fmtVariance(cT, pT, 'up')}</td>
+        <td class="pnl-sum-num">${fmtMoney(yT)}</td>
+        <td class="pnl-sum-num pnl-sum-pct">${fmtPct(totals.yoy ? blended(totals.yoy) : null)}</td>
+        <td class="pnl-sum-num">${fmtVariance(cT, yT, 'up')}</td>
+      </tr>`;
+      return `<tbody class="pnl-sum-section">
+        <tr class="pnl-sum-section-header"><td colspan="9">${section.title}</td></tr>
+        ${rowsHtml}
+        ${subtotalHtml}
+      </tbody>`;
+    }
+
     const rowsHtml = section.rows.map((row) => {
       const cV = cur[row.key] || 0;
       const pV = pri ? (pri[row.key] || 0) : null;

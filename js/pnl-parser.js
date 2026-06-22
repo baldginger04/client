@@ -164,24 +164,14 @@ export function parsePnlWorkbook(arrayBuffer) {
     collected.push({ indent, account_number: accountNumber, account_name: accountName, amounts });
   }
 
-  // Filter to leaf rows: a row is a leaf if either
-  //   (a) the NEXT collected row's indent is <= this row's indent (no children), OR
-  //   (b) this row has at least one non-zero direct value (a "parent with its
-  //       own posting" — QBO puts a value on a parent row only when there's a
-  //       direct journal entry to that account, not a sum of children).
-  //
-  // Without (b), parent-level adjustments (e.g. "6120 Payroll Taxes" with a
-  // -$82.93 correcting entry above its children 6121-6124) get dropped.
-  const rows = collected.filter((row, i) => {
-    const next = collected[i + 1];
-    const hasChildren = next && next.indent > row.indent;
-    if (!hasChildren) return true;  // leaf — no children below
-    // Has children: keep ONLY if the parent itself posts a non-zero amount.
-    const hasOwnValue = Object.values(row.amounts).some((v) => v !== 0);
-    return hasOwnValue;
-  });
-
-  return { months, rows };
+  // Return the FULL collected hierarchy (including zero-posting parent rows).
+  // The leaf filter that drops pure-sum parents now runs in matchAccounts,
+  // AFTER category inheritance — otherwise a zero-posting department parent
+  // (e.g. "4120 Tiny Cafe" with all its value on child rows) would be dropped
+  // before its children could inherit its category. For clients with no
+  // inherit_children rules this is behaviourally identical: matchAccounts
+  // applies the exact same leaf filter to the exact same rows.
+  return { months, rows: collected };
 }
 
 /** Convert "May 2025" / "January 2026" → "2025-05" / "2026-01". */
@@ -233,17 +223,59 @@ export function matchAccounts(rows, mappings, clientId) {
     return (typeOrder[a.match_type] ?? 99) - (typeOrder[b.match_type] ?? 99);
   });
 
-  return rows.map((row) => {
-    const cat = findCategory(row, sorted);
+  // Parent-category inheritance (opt-in, gated by the matched rule's
+  // inherit_children flag — default false). When a row matches no rule, it
+  // inherits the category of the nearest shallower-indent ancestor whose rule
+  // had inherit_children = true. This lets a single parent mapping (e.g.
+  // "4170 Grocery → grocery_sales") carry an arbitrary set of name-only child
+  // line items (Chocolate & Treats, Drinks & Juice, …) with no per-name rules
+  // and no account numbers. Restaurant clients set inherit_children nowhere,
+  // so their categorization is byte-identical to before. `indent` is the count
+  // of leading spaces captured at parse time. The same mechanism lets the Inn
+  // (P&L by class) and any future deeply-nested COA resolve cleanly.
+  const ancestors = [];  // stack of { indent, category, inherit }
+  const categorized = rows.map((row) => {
+    const rule = findCategoryRule(row, sorted);
+    let cat = rule ? rule.category : null;
+    let inherit = rule ? !!rule.inherit_children : false;
+
+    // Drop ancestors that are not strict parents of this row.
+    while (ancestors.length && ancestors[ancestors.length - 1].indent >= row.indent) {
+      ancestors.pop();
+    }
+    // Unmatched row: inherit from nearest inheriting ancestor, if any.
+    if (cat === null) {
+      for (let i = ancestors.length - 1; i >= 0; i--) {
+        if (ancestors[i].inherit && ancestors[i].category) {
+          cat = ancestors[i].category;
+          inherit = true;  // propagate so deeper descendants inherit too
+          break;
+        }
+      }
+    }
+    ancestors.push({ indent: row.indent, category: cat, inherit });
     return { ...row, category: cat };
+  });
+
+  // Leaf filter (moved here from parsePnlWorkbook): drop pure-sum parent rows
+  // — those that have deeper-indented children AND post no value of their own
+  // — now that their children have inherited any category they needed. The
+  // logic and result are identical to the previous in-parse filter, so for
+  // clients with no inherit_children rules the output is byte-identical.
+  return categorized.filter((row, i) => {
+    const next = rows[i + 1];
+    const hasChildren = next && next.indent > row.indent;
+    if (!hasChildren) return true;  // leaf — no children below
+    const hasOwnValue = Object.values(row.amounts).some((v) => v !== 0);
+    return hasOwnValue;
   });
 }
 
-function findCategory(row, sortedMappings) {
+function findCategoryRule(row, sortedMappings) {
   for (const rule of sortedMappings) {
-    if (rule.match_type === 'number_exact' && row.account_number === rule.account_match) return rule.category;
-    if (rule.match_type === 'number_prefix' && row.account_number && row.account_number.startsWith(rule.account_match)) return rule.category;
-    if (rule.match_type === 'name_contains' && row.account_name.toLowerCase().includes(rule.account_match.toLowerCase())) return rule.category;
+    if (rule.match_type === 'number_exact' && row.account_number === rule.account_match) return rule;
+    if (rule.match_type === 'number_prefix' && row.account_number && row.account_number.startsWith(rule.account_match)) return rule;
+    if (rule.match_type === 'name_contains' && row.account_name.toLowerCase().includes(rule.account_match.toLowerCase())) return rule;
   }
   return null;
 }
