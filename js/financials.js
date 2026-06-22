@@ -866,6 +866,8 @@ const PNL_CATEGORIES = [
   { value: 'na_bev_sales',       label: 'NA Beverages Sales' },
   { value: 'merchandise_sales',  label: 'Merchandise / Retail Sales' },
   { value: 'other_sales',        label: 'Other Sales' },
+  { value: 'amusement_sales',    label: 'Amusement / Golf Sales' },
+  { value: 'events_sales',       label: 'Events / Banquet Sales' },
   { value: 'discounts',          label: 'Discounts / Refunds' },
   // COGS
   { value: 'food_cogs',          label: 'Food COGS' },

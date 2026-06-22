@@ -14,55 +14,133 @@ import { sb } from './config.js';
 // percentage: e.g. food_cogs / food_sales, labor_boh / total_income.
 // rows that should NOT show a percentage have pctBase: null.
 // ---------------------------------------------------------------------
-const SECTIONS = [
-  {
-    title: 'Sales',
-    rows: [
-      { key: 'food_sales',         label: 'Food',              pctBase: null },
-      { key: 'liquor_sales',       label: 'Liquor',            pctBase: null },
-      { key: 'beer_sales',         label: 'Beer',              pctBase: null },
-      { key: 'wine_sales',         label: 'Wine',              pctBase: null },
-      { key: 'na_bev_sales',       label: 'NA Beverages',      pctBase: null },
-      { key: 'merchandise_sales',  label: 'Merchandise',       pctBase: null },
-      { key: 'other_sales',        label: 'Other',             pctBase: null },
-      { key: 'discounts',          label: 'Discounts & Refunds', pctBase: null },
-    ],
-    subtotal: { label: 'Total Income', favorableDirection: 'up', pctBase: null },
-  },
-  {
-    title: 'Cost of Goods Sold',
-    rows: [
-      { key: 'food_cogs',          label: 'Food COGS',         pctBase: 'food_sales' },
-      { key: 'liquor_cogs',        label: 'Liquor COGS',       pctBase: 'liquor_sales' },
-      { key: 'beer_cogs',          label: 'Beer COGS',         pctBase: 'beer_sales' },
-      { key: 'wine_cogs',          label: 'Wine COGS',         pctBase: 'wine_sales' },
-      { key: 'na_bev_cogs',        label: 'NA Beverages COGS', pctBase: 'na_bev_sales' },
-      { key: 'merchandise_cogs',   label: 'Merchandise COGS',  pctBase: 'merchandise_sales' },
-      { key: 'other_cogs',         label: 'Other COGS',        pctBase: 'other_sales' },
-    ],
-    // Total COGS % is of Total Income (computed separately below).
-    subtotal: { label: 'Total COGS', favorableDirection: 'down', pctBase: 'TOTAL_INCOME' },
-  },
-  {
-    title: 'Labor',
-    rows: [
-      { key: 'labor_boh',          label: 'BOH',               pctBase: 'TOTAL_INCOME' },
-      { key: 'labor_foh',          label: 'FOH',               pctBase: 'TOTAL_INCOME' },
-      { key: 'labor_management',   label: 'Management',        pctBase: 'TOTAL_INCOME' },
-      { key: 'labor_other',        label: 'Other',             pctBase: 'TOTAL_INCOME' },
-      { key: 'labor_bonus',        label: 'Bonus',             pctBase: 'TOTAL_INCOME' },
-      { key: 'labor_benefits',     label: 'Benefits',          pctBase: 'TOTAL_INCOME' },
-      { key: 'payroll_taxes',      label: 'Payroll Taxes',     pctBase: 'TOTAL_INCOME' },
-    ],
-    subtotal: { label: 'Total Labor', favorableDirection: 'down', pctBase: 'TOTAL_INCOME' },
-  },
-];
+// Per-client templates. A client's clients.kpi_template selects which one
+// renders. Each section carries a `role` ('income' | 'cogs' | 'labor') so
+// totals sum correctly regardless of how many/which rows a template shows.
+// `restaurant` is the original layout, kept byte-for-byte; the 42 existing
+// restaurant clients render exactly as before.
 
-// Pseudo-rows computed from section totals.
-const COMPUTED = [
-  { label: 'Gross Profit',  compute: (s) => s.totals.income - s.totals.cogs,                                                   favorableDirection: 'up',   isPct: false, pctBase: 'TOTAL_INCOME' },
-  { label: 'Prime Cost',    compute: (s) => s.totals.cogs + s.totals.labor,                                                    favorableDirection: 'down', isPct: false, pctBase: 'TOTAL_INCOME' },
-];
+// Shared headline metric defs (the Quick-look picker cards).
+const HM = {
+  food:   { id: 'h_food',   label: 'Food Cost',     kind: 'line',  key: 'food_cogs', pctBase: 'food_sales', dir: 'down', noun: 'food COGS' },
+  bev:    { id: 'h_bev',    label: 'Beverage Cost', kind: 'bev',   dir: 'down', noun: 'bev COGS (liq+beer+wine)' },
+  labor:  { id: 'h_labor',  label: 'Labor',         kind: 'total', which: 'labor', pctBase: 'TOTAL_INCOME', dir: 'down', noun: 'labor' },
+  prime:  { id: 'h_prime',  label: 'Prime Cost',    kind: 'prime', pctBase: 'TOTAL_INCOME', dir: 'down', noun: 'COGS + labor' },
+  income: { id: 'h_income', label: 'Total Income',  kind: 'total', which: 'income', pctBase: null, dir: 'up', noun: 'total income' },
+  comps:  { id: 'h_comps',  label: 'Comps %',       kind: 'comps', pctBase: null, dir: 'down', noun: 'comps & discounts' },
+};
+
+const RESTAURANT_TEMPLATE = {
+  sections: [
+    {
+      title: 'Sales', role: 'income',
+      rows: [
+        { key: 'food_sales',         label: 'Food',              pctBase: null },
+        { key: 'liquor_sales',       label: 'Liquor',            pctBase: null },
+        { key: 'beer_sales',         label: 'Beer',              pctBase: null },
+        { key: 'wine_sales',         label: 'Wine',              pctBase: null },
+        { key: 'na_bev_sales',       label: 'NA Beverages',      pctBase: null },
+        { key: 'merchandise_sales',  label: 'Merchandise',       pctBase: null },
+        { key: 'other_sales',        label: 'Other',             pctBase: null },
+        { key: 'discounts',          label: 'Discounts & Refunds', pctBase: null },
+      ],
+      subtotal: { label: 'Total Income', favorableDirection: 'up', pctBase: null },
+    },
+    {
+      title: 'Cost of Goods Sold', role: 'cogs',
+      rows: [
+        { key: 'food_cogs',          label: 'Food COGS',         pctBase: 'food_sales' },
+        { key: 'liquor_cogs',        label: 'Liquor COGS',       pctBase: 'liquor_sales' },
+        { key: 'beer_cogs',          label: 'Beer COGS',         pctBase: 'beer_sales' },
+        { key: 'wine_cogs',          label: 'Wine COGS',         pctBase: 'wine_sales' },
+        { key: 'na_bev_cogs',        label: 'NA Beverages COGS', pctBase: 'na_bev_sales' },
+        { key: 'merchandise_cogs',   label: 'Merchandise COGS',  pctBase: 'merchandise_sales' },
+        { key: 'other_cogs',         label: 'Other COGS',        pctBase: 'other_sales' },
+      ],
+      subtotal: { label: 'Total COGS', favorableDirection: 'down', pctBase: 'TOTAL_INCOME' },
+    },
+    {
+      title: 'Labor', role: 'labor',
+      rows: [
+        { key: 'labor_boh',          label: 'BOH',               pctBase: 'TOTAL_INCOME' },
+        { key: 'labor_foh',          label: 'FOH',               pctBase: 'TOTAL_INCOME' },
+        { key: 'labor_management',   label: 'Management',        pctBase: 'TOTAL_INCOME' },
+        { key: 'labor_other',        label: 'Other',             pctBase: 'TOTAL_INCOME' },
+        { key: 'labor_bonus',        label: 'Bonus',             pctBase: 'TOTAL_INCOME' },
+        { key: 'labor_benefits',     label: 'Benefits',          pctBase: 'TOTAL_INCOME' },
+        { key: 'payroll_taxes',      label: 'Payroll Taxes',     pctBase: 'TOTAL_INCOME' },
+      ],
+      subtotal: { label: 'Total Labor', favorableDirection: 'down', pctBase: 'TOTAL_INCOME' },
+    },
+  ],
+  computed: [
+    { label: 'Gross Profit',  compute: (s) => s.totals.income - s.totals.cogs,   favorableDirection: 'up',   isPct: false, pctBase: 'TOTAL_INCOME' },
+    { label: 'Prime Cost',    compute: (s) => s.totals.cogs + s.totals.labor,    favorableDirection: 'down', isPct: false, pctBase: 'TOTAL_INCOME' },
+  ],
+  headline: [HM.food, HM.bev, HM.labor, HM.prime, HM.income],
+};
+
+// Entertainment venue (e.g. mini-golf + bar/kitchen). Golf/events are
+// pure-margin sales lines with no COGS, so cost %s are taken against their
+// OWN sales base — never blended against the golf-inflated top line. Comps
+// (incl. drink-ticket comps) surface as a headline; Prime Cost stays in the
+// table but is demoted from the headline since it's meaningless here.
+const ENTERTAINMENT_TEMPLATE = {
+  sections: [
+    {
+      title: 'Sales', role: 'income',
+      rows: [
+        { key: 'amusement_sales',    label: 'Mini Golf',          pctBase: null },
+        { key: 'food_sales',         label: 'Food',               pctBase: null },
+        { key: 'liquor_sales',       label: 'Liquor',             pctBase: null },
+        { key: 'beer_sales',         label: 'Beer',               pctBase: null },
+        { key: 'wine_sales',         label: 'Wine',               pctBase: null },
+        { key: 'na_bev_sales',       label: 'Soft Beverages',     pctBase: null },
+        { key: 'events_sales',       label: 'Events / Banquets',  pctBase: null },
+        { key: 'merchandise_sales',  label: 'Merchandise',        pctBase: null },
+        { key: 'other_sales',        label: 'Other',              pctBase: null },
+        { key: 'discounts',          label: 'Comps & Discounts',  pctBase: null },
+      ],
+      subtotal: { label: 'Total Income', favorableDirection: 'up', pctBase: null },
+    },
+    {
+      title: 'Cost of Goods Sold', role: 'cogs',
+      rows: [
+        { key: 'food_cogs',          label: 'Food COGS',         pctBase: 'food_sales' },
+        { key: 'liquor_cogs',        label: 'Liquor COGS',       pctBase: 'liquor_sales' },
+        { key: 'beer_cogs',          label: 'Beer COGS',         pctBase: 'beer_sales' },
+        { key: 'wine_cogs',          label: 'Wine COGS',         pctBase: 'wine_sales' },
+        { key: 'merchandise_cogs',   label: 'Merchandise COGS',  pctBase: 'merchandise_sales' },
+      ],
+      subtotal: { label: 'Total COGS', favorableDirection: 'down', pctBase: 'TOTAL_INCOME' },
+    },
+    {
+      title: 'Labor', role: 'labor',
+      rows: [
+        { key: 'labor_boh',          label: 'BOH',               pctBase: 'TOTAL_INCOME' },
+        { key: 'labor_foh',          label: 'FOH',               pctBase: 'TOTAL_INCOME' },
+        { key: 'labor_management',   label: 'Management',        pctBase: 'TOTAL_INCOME' },
+        { key: 'labor_other',        label: 'Other (incl. course ops)', pctBase: 'TOTAL_INCOME' },
+        { key: 'labor_benefits',     label: 'Benefits',          pctBase: 'TOTAL_INCOME' },
+        { key: 'payroll_taxes',      label: 'Payroll Taxes',     pctBase: 'TOTAL_INCOME' },
+      ],
+      subtotal: { label: 'Total Labor', favorableDirection: 'down', pctBase: 'TOTAL_INCOME' },
+    },
+  ],
+  computed: [
+    { label: 'Gross Profit',  compute: (s) => s.totals.income - s.totals.cogs,   favorableDirection: 'up',   isPct: false, pctBase: 'TOTAL_INCOME' },
+    { label: 'Prime Cost',    compute: (s) => s.totals.cogs + s.totals.labor,    favorableDirection: 'down', isPct: false, pctBase: 'TOTAL_INCOME' },
+  ],
+  headline: [HM.food, HM.bev, HM.labor, HM.comps, HM.income],
+};
+
+const TEMPLATES = {
+  restaurant:    RESTAURANT_TEMPLATE,
+  entertainment: ENTERTAINMENT_TEMPLATE,
+};
+
+// Active template for the client currently mounted (set in mountPnlSummary).
+let activeTemplate = RESTAURANT_TEMPLATE;
 
 // State for the active drill-down (current client + raw rows kept here so
 // the modal can re-query account-level detail without another DB call).
@@ -75,6 +153,19 @@ let selectedMetric = 'h_food';
 export async function mountPnlSummary({ clientId }) {
   const root = document.getElementById('tab-pnl-summary');
   if (!root) return;
+
+  // Pick the per-client KPI template (default 'restaurant'). Failure to read
+  // it must never break the sheet, so any error falls back to restaurant.
+  try {
+    const { data: cli } = await sb.from('clients').select('kpi_template').eq('id', clientId).single();
+    activeTemplate = TEMPLATES[cli && cli.kpi_template] || RESTAURANT_TEMPLATE;
+  } catch (_) {
+    activeTemplate = RESTAURANT_TEMPLATE;
+  }
+  // Ensure the Quick-look picker starts on a metric this template actually has.
+  if (!activeTemplate.headline.some((m) => m.id === selectedMetric)) {
+    selectedMetric = activeTemplate.headline[0].id;
+  }
 
   root.innerHTML = `
     <section class="card">
@@ -207,9 +298,9 @@ function computePct(value, pctBase, periodData, periodTotals) {
 
 function sectionTotals(data) {
   const t = { income: 0, cogs: 0, labor: 0 };
-  for (const r of SECTIONS[0].rows) t.income += (data[r.key] || 0);
-  for (const r of SECTIONS[1].rows) t.cogs   += (data[r.key] || 0);
-  for (const r of SECTIONS[2].rows) t.labor  += (data[r.key] || 0);
+  for (const section of activeTemplate.sections) {
+    for (const r of section.rows) t[section.role] += (data[r.key] || 0);
+  }
   return t;
 }
 
@@ -222,15 +313,9 @@ function sectionTotals(data) {
 // window (never an average of monthly percentages).
 // ---------------------------------------------------------------------
 function buildMetricList() {
-  const headline = [
-    { id: 'h_food',   label: 'Food Cost',     kind: 'line',  key: 'food_cogs', pctBase: 'food_sales', dir: 'down', noun: 'food COGS' },
-    { id: 'h_bev',    label: 'Beverage Cost', kind: 'bev',   dir: 'down', noun: 'bev COGS (liq+beer+wine)' },
-    { id: 'h_labor',  label: 'Labor',         kind: 'total', which: 'labor', pctBase: 'TOTAL_INCOME', dir: 'down', noun: 'labor' },
-    { id: 'h_prime',  label: 'Prime Cost',    kind: 'prime', pctBase: 'TOTAL_INCOME', dir: 'down', noun: 'COGS + labor' },
-    { id: 'h_income', label: 'Total Income',  kind: 'total', which: 'income', pctBase: null, dir: 'up', noun: 'total income' },
-  ];
+  const headline = activeTemplate.headline;
   const lines = [];
-  SECTIONS.forEach((section) => {
+  activeTemplate.sections.forEach((section) => {
     const dir = section.title === 'Sales' ? 'up' : 'down';
     section.rows.forEach((row) => {
       lines.push({ id: 'k_' + row.key, group: section.title, label: row.label,
@@ -287,6 +372,14 @@ function metricValue(metric, win) {
     case 'gross': {
       const value = (totals.income || 0) - (totals.cogs || 0);
       return { value, pct: computePct(value, 'TOTAL_INCOME', data, totals) };
+    }
+    case 'comps': {
+      // discounts are stored negative; comps % = |discounts| / gross sales,
+      // where gross = net income with the discounts added back in.
+      const disc = data.discounts || 0;
+      const value = Math.abs(disc);
+      const gross = (totals.income || 0) - disc;
+      return { value, pct: gross ? (value / gross) * 100 : null };
     }
     default: return { value: 0, pct: null };
   }
@@ -424,7 +517,7 @@ function renderTable() {
       </tr>
     </thead>`;
 
-  const sectionHtml = SECTIONS.map((section, sIdx) => {
+  const sectionHtml = activeTemplate.sections.map((section) => {
     const rowsHtml = section.rows.map((row) => {
       const cV = cur[row.key] || 0;
       const pV = pri ? (pri[row.key] || 0) : null;
@@ -456,7 +549,7 @@ function renderTable() {
       </tr>`;
     }).join('');
 
-    const totalKey = sIdx === 0 ? 'income' : sIdx === 1 ? 'cogs' : 'labor';
+    const totalKey = section.role;
     const cT = totals.current[totalKey];
     const pT = totals.prior ? totals.prior[totalKey] : null;
     const yT = totals.yoy ? totals.yoy[totalKey] : null;
@@ -488,7 +581,7 @@ function renderTable() {
   }).join('');
 
   // Computed section (Gross Profit / Prime Cost)
-  const computedHtml = COMPUTED.map((c) => {
+  const computedHtml = activeTemplate.computed.map((c) => {
     const cV = c.compute({ totals: totals.current });
     const pV = totals.prior ? c.compute({ totals: totals.prior }) : null;
     const yV = totals.yoy   ? c.compute({ totals: totals.yoy })   : null;
