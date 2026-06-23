@@ -174,8 +174,118 @@ export function parsePnlWorkbook(arrayBuffer) {
   return { months, rows: collected };
 }
 
-/** Convert "May 2025" / "January 2026" → "2025-05" / "2026-01". */
-function parseMonthLabel(label) {
+/**
+ * Detect whether a workbook is a "Profit and Loss by Class" export (class
+ * columns) versus a standard month/Total P&L. Cheap: checks the sheet name
+ * first, then falls back to a header-row scan (col A blank, a Total column,
+ * and ≥2 non-month value labels). Returns 'by_class' or 'standard'.
+ */
+export function detectPnlFormat(arrayBuffer) {
+  const XLSX = window.XLSX;
+  if (!XLSX) throw new Error('SheetJS (XLSX) not loaded');
+  const wb = XLSX.read(arrayBuffer, { type: 'array' });
+  if (!wb.SheetNames.length) return 'standard';
+  if (wb.SheetNames.some((n) => /by\s*class/i.test(n))) return 'by_class';
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  for (let i = 0; i < Math.min(aoa.length, 15); i++) {
+    const row = aoa[i];
+    if (!row || String(row[0] || '').trim() !== '') continue;
+    const labels = row.slice(1).map((v) => String(v || '').trim());
+    const hasTotal = labels.some((l) => l.toLowerCase() === 'total');
+    const classish = labels.filter((l) => l && l.toLowerCase() !== 'total' && !parseMonthLabel(l));
+    if (hasTotal && classish.length >= 2) return 'by_class';
+  }
+  return 'standard';
+}
+
+/**
+ * Parse a "Profit and Loss by Class" export. Unlike the standard parser the
+ * columns are CLASSES (business units), not months, and the single period
+ * lives in the title block. Returns:
+ *   { period: '2026-05', classes: ['Alexander\'s', ...],
+ *     rowsByClass: { "Alexander's": [ {indent, account_number, account_name,
+ *                                      amounts: { '2026-05': 1234.56 } }, ... ], ... } }
+ *
+ * Every account row is emitted for every class (including its zero rows) so
+ * each class carries the FULL account hierarchy — matchAccounts then applies
+ * parent inheritance + the leaf filter per class independently.
+ */
+export function parsePnlByClass(arrayBuffer) {
+  const XLSX = window.XLSX;
+  if (!XLSX) throw new Error('SheetJS (XLSX) not loaded');
+  const wb = XLSX.read(arrayBuffer, { type: 'array' });
+  if (!wb.SheetNames.length) throw new Error('Empty workbook');
+  const sheetName = wb.SheetNames.find((n) => /by\s*class/i.test(n))
+    || wb.SheetNames.find((n) => /profit.*loss|p.*?l\b/i.test(n))
+    || wb.SheetNames[0];
+  const ws = wb.Sheets[sheetName];
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+  // Header row: col A blank, a Total column, and ≥2 non-month value labels.
+  let headerRowIdx = -1;
+  for (let i = 0; i < Math.min(aoa.length, 15); i++) {
+    const row = aoa[i];
+    if (!row || String(row[0] || '').trim() !== '') continue;
+    const labels = row.slice(1).map((v) => String(v || '').trim());
+    const hasTotal = labels.some((l) => l.toLowerCase() === 'total');
+    const classish = labels.filter((l) => l && l.toLowerCase() !== 'total' && !parseMonthLabel(l));
+    if (hasTotal && classish.length >= 2) { headerRowIdx = i; break; }
+  }
+  if (headerRowIdx < 0) throw new Error("Couldn't find the class header row — is this a P&L by Class export?");
+
+  // Period: a month / range label in the title rows above the header.
+  let period = null;
+  for (let j = 0; j < headerRowIdx; j++) {
+    const title = String((aoa[j] || [])[0] || '').trim();
+    const p = parseMonthLabel(title) || parseMonthRangeEnd(title);
+    if (p) { period = p; break; }
+  }
+  if (!period) throw new Error("Couldn't read the period (e.g. 'May 2026') from the title rows");
+
+  // Class columns: every column whose header isn't blank/Total. Strip the
+  // leading "N - " QBO class-number prefix so "1 - Alexander's" → "Alexander's".
+  const headerRow = aoa[headerRowIdx];
+  const classCols = [];
+  for (let c = 1; c < headerRow.length; c++) {
+    const label = String(headerRow[c] || '').trim();
+    if (!label || label.toLowerCase() === 'total') continue;
+    classCols.push({ col: c, name: label.replace(/^\d+\s*-\s*/, '').trim() });
+  }
+  if (!classCols.length) throw new Error('No class columns found in header row');
+
+  const rowsByClass = {};
+  classCols.forEach((cc) => { rowsByClass[cc.name] = []; });
+
+  for (let r = headerRowIdx + 1; r < aoa.length; r++) {
+    const raw = aoa[r];
+    if (!raw) continue;
+    const label = String(raw[0] || '');
+    const trimmed = label.trim();
+    if (!trimmed) continue;
+    if (SKIP_EXACT.has(trimmed)) continue;
+    if (SKIP_PREFIXES.some((p) => trimmed.startsWith(p))) continue;
+    if (/accrual basis|cash basis|^\w+,\s+\w+\s+\d+,\s+\d{4}/i.test(trimmed)) break;
+
+    const indent = label.length - label.replace(/^ +/, '').length;
+    const m = trimmed.match(/^(\d{3,5}(?:\.\.)?)\s+(.+)$/);
+    const accountNumber = m ? m[1] : null;
+    const accountName   = m ? m[2].trim() : trimmed;
+
+    classCols.forEach((cc) => {
+      const v = raw[cc.col];
+      const num = typeof v === 'number' ? v : (parseFloat(String(v).replace(/[$,]/g, '')) || 0);
+      rowsByClass[cc.name].push({
+        indent, account_number: accountNumber, account_name: accountName,
+        amounts: { [period]: num },
+      });
+    });
+  }
+
+  return { period, classes: classCols.map((c) => c.name), rowsByClass };
+}
+
+
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const m = label.match(/^([A-Za-z]+)\s+(\d{4})$/);
   if (!m) return null;
@@ -306,6 +416,7 @@ export async function persistPnlData(clientId, parsedRows, months, sourceFileId)
         account_name: row.account_name,
         amount,
         category: row.category || null,
+        class: row.class || null,
         source_file_id: sourceFileId,
       });
     }

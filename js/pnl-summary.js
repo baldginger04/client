@@ -187,6 +187,17 @@ const TEMPLATES = {
   restaurant:    RESTAURANT_TEMPLATE,
   entertainment: ENTERTAINMENT_TEMPLATE,
   market:        MARKET_TEMPLATE,
+  // Lodging / mixed-use (e.g. Inn on the Creek). The P&L is exported BY CLASS;
+  // each class is a separate business unit. Per Ed's scope we surface only the
+  // two restaurants as prime sheets — each renders the standard restaurant
+  // template, filtered to its class — and hide the rooms / venue / overhead
+  // classes. Spreads RESTAURANT_TEMPLATE so the sections, computed rows and
+  // headline metrics are identical; `excludeClasses` drives the class selector.
+  lodging_mixed: {
+    ...RESTAURANT_TEMPLATE,
+    excludeClasses: ['The Venue', 'The Inn', 'Overhead', 'Not Specified'],
+    classOrder: ["Alexander's", 'The Shed'],
+  },
 };
 
 // Active template for the client currently mounted (set in mountPnlSummary).
@@ -196,6 +207,8 @@ let activeTemplate = RESTAURANT_TEMPLATE;
 // the modal can re-query account-level detail without another DB call).
 let activeData = null;
 let selectedMetric = 'h_food';
+let selectedClass = null;   // lodging_mixed only: which class/business unit is shown
+let allRowsCache = null;    // raw pnl_data rows kept so class switching needs no refetch
 
 // ---------------------------------------------------------------------
 // Entry points
@@ -221,6 +234,7 @@ export async function mountPnlSummary({ clientId }) {
     <section class="card">
       <h2 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin:0 0 4px">Prime Sheet</h2>
       <p style="color:var(--text2);margin:0 0 18px;font-size:13px">Current month vs prior month and same month last year. Click any row for account-level detail.</p>
+      <div id="pnl-class-tabs"></div>
       <div id="pnl-metric-picker"></div>
       <div id="pnl-summary-content" style="padding:24px;text-align:center;color:var(--text3)">Loading…</div>
     </section>`;
@@ -239,7 +253,7 @@ export async function mountPnlSummary({ clientId }) {
     while (true) {
       const res = await sb
         .from('pnl_data')
-        .select('period, category, amount, account_number, account_name')
+        .select('period, category, amount, account_number, account_name, class')
         .eq('client_id', clientId)
         .not('category', 'is', null)
         .order('period', { ascending: true })
@@ -267,10 +281,45 @@ export async function mountPnlSummary({ clientId }) {
     return;
   }
 
-  // Aggregate by period + category (for the summary table). Also keep raw
-  // rows so the drill-down can show account-level breakdowns by category.
+  // Cache raw rows so switching class (lodging) needs no refetch.
+  allRowsCache = rows;
+
+  // Lodging templates (Inn) are exported by class. Derive the class list from
+  // the data (minus the hidden non-restaurant classes) and default to the
+  // first; non-class templates get an empty list and selectedClass = null.
+  const classes = availableClasses();
+  selectedClass = classes.length
+    ? (classes.includes(selectedClass) ? selectedClass : classes[0])
+    : null;
+  renderClassTabs(classes);
+
+  computeAndRenderFromCache();
+}
+
+// Distinct classes present in the cached rows, filtered + ordered per the
+// active (lodging) template. Empty for non-class templates.
+function availableClasses() {
+  if (!activeTemplate.excludeClasses || !allRowsCache) return [];
+  const excl = new Set(activeTemplate.excludeClasses);
+  const present = [...new Set(allRowsCache.map((r) => r.class).filter((c) => c && !excl.has(c)))];
+  const order = activeTemplate.classOrder || [];
+  present.sort((a, b) => {
+    const ia = order.indexOf(a), ib = order.indexOf(b);
+    if (ia !== -1 || ib !== -1) return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    return a.localeCompare(b);
+  });
+  return present;
+}
+
+// Aggregate the cached rows (filtered to selectedClass when class-based) and
+// render. Class switching re-runs this with no DB round-trip.
+function computeAndRenderFromCache() {
+  const rows = (selectedClass !== null)
+    ? allRowsCache.filter((r) => r.class === selectedClass)
+    : allRowsCache;
+
   const byPeriod = {};
-  const rawByPeriodCategory = {};  // { period: { category: [ {account_number, account_name, amount}, ... ] } }
+  const rawByPeriodCategory = {};  // { period: { category: [ {account_number, account_name, amount} ] } }
   for (const r of rows) {
     if (!byPeriod[r.period]) byPeriod[r.period] = {};
     byPeriod[r.period][r.category] = (byPeriod[r.period][r.category] || 0) + Number(r.amount);
@@ -290,6 +339,33 @@ export async function mountPnlSummary({ clientId }) {
 
   activeData = { byPeriod, rawByPeriodCategory, current, prior, yoy: yoyExists };
   renderTable();
+}
+
+// Class selector for lodging templates (no-op for everything else). Styled
+// inline so it needs no portal CSS changes.
+function renderClassTabs(classes) {
+  const host = document.getElementById('pnl-class-tabs');
+  if (!host) return;
+  if (!classes || classes.length === 0) { host.innerHTML = ''; return; }
+  host.innerHTML = `<div style="display:flex;gap:6px;margin:0 0 16px;flex-wrap:wrap">${classes.map((c) => {
+    const on = c === selectedClass;
+    return `<button class="pnl-class-tab" data-class="${escapeAttr(c)}" style="padding:7px 16px;border-radius:8px;border:1px solid ${on ? 'var(--accent,#D85B31)' : 'var(--border,#d8dce5)'};background:${on ? 'var(--accent,#D85B31)' : 'transparent'};color:${on ? '#fff' : 'var(--text2,#5b6472)'};font-weight:${on ? '600' : '500'};font-size:13px;cursor:pointer">${escapeHtml(c)}</button>`;
+  }).join('')}</div>`;
+  host.querySelectorAll('.pnl-class-tab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const c = btn.getAttribute('data-class');
+      if (c === selectedClass) return;
+      selectedClass = c;
+      host.querySelectorAll('.pnl-class-tab').forEach((b) => {
+        const bon = b.getAttribute('data-class') === c;
+        b.style.background = bon ? 'var(--accent,#D85B31)' : 'transparent';
+        b.style.color = bon ? '#fff' : 'var(--text2,#5b6472)';
+        b.style.borderColor = bon ? 'var(--accent,#D85B31)' : 'var(--border,#d8dce5)';
+        b.style.fontWeight = bon ? '600' : '500';
+      });
+      computeAndRenderFromCache();
+    });
+  });
 }
 
 export function unmountPnlSummary() {

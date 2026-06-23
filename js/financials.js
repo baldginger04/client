@@ -14,7 +14,7 @@
 // =====================================================================
 
 import { sb } from './config.js';
-import { parsePnlWorkbook, matchAccounts, persistPnlData, fetchMappings } from './pnl-parser.js';
+import { parsePnlWorkbook, parsePnlByClass, detectPnlFormat, matchAccounts, persistPnlData, fetchMappings } from './pnl-parser.js';
 import { activateCommenting, deactivateCommenting } from './pnl-comments-ui.js';
 
 const BUCKET = 'financials';
@@ -912,30 +912,51 @@ const PNL_CATEGORIES = [
 // In-memory state for the active parse session. Cleared when the modal closes.
 let parseSession = null;
 
+// Identity of an account across class columns (by-Class files emit the same
+// account once per class). Used to dedupe the review modal and to apply a
+// single category override to every class on save.
+function pnlAcctKey(r) { return (r.account_number || '') + '|' + r.account_name; }
+
 async function openParseModal(fileId) {
   const f = state.files.find((x) => x.id === fileId);
   if (!f) return alert("File not found");
 
-  // 1. Download + parse the xlsx
-  let parsed;
+  // 1. Download
+  let buf;
   try {
-    const buf = await downloadAsBuffer(f.storage_path);
-    parsed = parsePnlWorkbook(buf);
+    buf = await downloadAsBuffer(f.storage_path);
+  } catch (e) {
+    return alert("Couldn't read file: " + (e.message || e));
+  }
+
+  // 2. Fetch mappings, then parse + categorize per format.
+  const mappings = await fetchMappings(state.clientId);
+  try {
+    if (detectPnlFormat(buf) === 'by_class') {
+      // P&L by Class: parse each class column as its own account hierarchy and
+      // categorize it independently (inheritance + leaf filter run per class),
+      // then tag each row with its class.
+      const parsed = parsePnlByClass(buf);
+      const rows = [];
+      for (const cls of parsed.classes) {
+        const cat = matchAccounts(parsed.rowsByClass[cls], mappings, state.clientId);
+        cat.forEach((rw) => rows.push({ ...rw, class: cls }));
+      }
+      parseSession = {
+        file: f, months: [parsed.period], classes: parsed.classes,
+        byClass: true, rows, overrides: {},  // overrides keyed by account key
+      };
+    } else {
+      const parsed = parsePnlWorkbook(buf);
+      const rowsWithCat = matchAccounts(parsed.rows, mappings, state.clientId);
+      parseSession = {
+        file: f, months: parsed.months, byClass: false,
+        rows: rowsWithCat, overrides: {},  // overrides keyed by row index
+      };
+    }
   } catch (e) {
     return alert("Couldn't parse P&L: " + (e.message || e));
   }
-
-  // 2. Fetch mappings and categorize
-  const mappings = await fetchMappings(state.clientId);
-  const rowsWithCat = matchAccounts(parsed.rows, mappings, state.clientId);
-
-  // 3. Stash the session and render modal
-  parseSession = {
-    file: f,
-    months: parsed.months,
-    rows: rowsWithCat,
-    overrides: {},  // keyed by row index — user-edited categories
-  };
   injectAndShowModal();
 }
 
@@ -953,35 +974,61 @@ function injectAndShowModal() {
   const old = document.getElementById('pnlParseModal');
   if (old) old.remove();
 
-  const { file, months, rows } = parseSession;
-  const unmatchedCount = rows.filter((r) => !r.category).length;
+  const { file, months, rows, byClass } = parseSession;
   const periodRange = months.length === 1 ? months[0] : `${months[0]} → ${months[months.length - 1]}`;
+  const sampleMonth = months[months.length - 1];
 
-  // Sort: unmatched first (so the team's eye lands on them), then by account
-  // number (ascending). Stable enough for QBO numbering conventions.
-  const ordered = [...rows.map((r, i) => ({ ...r, _origIdx: i }))].sort((a, b) => {
-    const am = !a.category ? 0 : 1;
-    const bm = !b.category ? 0 : 1;
+  // Build review rows. Standard files: one row per parsed account, keyed by
+  // index. By-Class files emit each account once per class, so dedupe to one
+  // row per account (keyed by account identity); the sample column sums the
+  // account across all classes and an override applies to every class on save.
+  let viewRows;
+  if (byClass) {
+    const byKey = new Map();
+    rows.forEach((r) => {
+      const key = pnlAcctKey(r);
+      if (!byKey.has(key)) {
+        byKey.set(key, { _key: key, account_number: r.account_number,
+          account_name: r.account_name, category: r.category, _sample: 0 });
+      }
+      byKey.get(key)._sample += (r.amounts[sampleMonth] || 0);
+    });
+    viewRows = [...byKey.values()];
+  } else {
+    viewRows = rows.map((r, i) => ({ _key: i, account_number: r.account_number,
+      account_name: r.account_name, category: r.category, _sample: r.amounts[sampleMonth] || 0 }));
+  }
+
+  const unmatchedCount = viewRows.filter((r) => !r.category).length;
+
+  // Sort: unmatched first, then by account number.
+  const ordered = [...viewRows].sort((a, b) => {
+    const am = !a.category ? 0 : 1, bm = !b.category ? 0 : 1;
     if (am !== bm) return am - bm;
     return (a.account_number || '~').localeCompare(b.account_number || '~');
   });
 
-  const sampleMonth = months[months.length - 1];  // most recent month for the sample column
-
   const rowsHtml = ordered.map((row) => {
-    const sample = row.amounts[sampleMonth] || 0;
     const isUnmatched = !row.category;
-    const select = `<select class="pnl-cat-select" data-row-idx="${row._origIdx}">
+    const select = `<select class="pnl-cat-select" data-key="${escapeHtml(String(row._key))}">
       <option value="">— unmapped —</option>
       ${PNL_CATEGORIES.map((c) => `<option value="${c.value}"${row.category === c.value ? ' selected' : ''}>${escapeHtml(c.label)}</option>`).join('')}
     </select>`;
     return `<tr class="${isUnmatched ? 'pnl-row-unmatched' : ''}">
       <td class="pnl-acct-num">${escapeHtml(row.account_number || '—')}</td>
       <td class="pnl-acct-name">${escapeHtml(row.account_name)}</td>
-      <td class="pnl-sample">${formatMoney(sample)}</td>
+      <td class="pnl-sample">${formatMoney(row._sample)}</td>
       <td>${select}</td>
     </tr>`;
   }).join('');
+
+  const subInfo = byClass
+    ? `${parseSession.classes.length} classes · ${escapeHtml(months[0])} · ${viewRows.length} accounts · `
+    : `${months.length} month${months.length === 1 ? '' : 's'} (${periodRange}) · ${viewRows.length} accounts · `;
+  const sampleHeader = byClass ? `${escapeHtml(months[0])} · all units` : escapeHtml(sampleMonth);
+  const helpText = byClass
+    ? `This is a P&amp;L <strong>by Class</strong>. Each account appears once; the amount sums all classes, and the category applies to every class. Per-class figures populate each restaurant's Prime Sheet (Alexander's, The Shed).`
+    : `Review the category assignments below. Any changes you make are saved as rules for this client (next time, the same account auto-maps the same way). Unmapped rows are listed first. Set to <em>— Ignore this account —</em> to exclude an account from all charts.`;
 
   const html = `
     <div id="pnlParseModal" class="pnl-modal-backdrop">
@@ -990,25 +1037,20 @@ function injectAndShowModal() {
           <div>
             <div class="pnl-modal-title">Parse P&amp;L: ${escapeHtml(file.filename)}</div>
             <div class="pnl-modal-sub">
-              ${months.length} month${months.length === 1 ? '' : 's'} (${periodRange}) ·
-              ${rows.length} accounts ·
+              ${subInfo}
               ${unmatchedCount > 0 ? `<strong style="color:var(--red)">${unmatchedCount} unmapped</strong>` : `<span style="color:var(--green)">all mapped</span>`}
             </div>
           </div>
           <button class="icon-btn" id="pnlParseClose" title="Close">✕</button>
         </div>
         <div class="pnl-modal-body">
-          <div class="pnl-help">
-            Review the category assignments below. Any changes you make are saved as rules for this client
-            (next time, the same account auto-maps the same way). Unmapped rows are listed first.
-            Set to <em>— Ignore this account —</em> to exclude an account from all charts.
-          </div>
+          <div class="pnl-help">${helpText}</div>
           <table class="pnl-review-table">
             <thead>
               <tr>
                 <th style="width:80px">#</th>
                 <th>Account Name</th>
-                <th style="width:120px;text-align:right">${escapeHtml(sampleMonth)}</th>
+                <th style="width:140px;text-align:right">${sampleHeader}</th>
                 <th style="width:220px">Category</th>
               </tr>
             </thead>
@@ -1029,12 +1071,13 @@ function injectAndShowModal() {
   document.getElementById('pnlParseClose').addEventListener('click', closeParseModal);
   document.getElementById('pnlParseCancel').addEventListener('click', closeParseModal);
   document.getElementById('pnlParseSave').addEventListener('click', saveParseSession);
-  // Capture dropdown changes into overrides
+  // Capture dropdown changes into overrides (key is row index, or account key
+  // for by-Class files).
   document.querySelectorAll('.pnl-cat-select').forEach((sel) => {
     sel.addEventListener('change', (e) => {
-      const idx = parseInt(e.target.dataset.rowIdx, 10);
-      const val = e.target.value;
-      parseSession.overrides[idx] = val || null;  // empty string → null (unmapped)
+      const rawKey = e.target.dataset.key;
+      const key = parseSession.byClass ? rawKey : parseInt(rawKey, 10);
+      parseSession.overrides[key] = e.target.value || null;  // '' → null (unmapped)
     });
   });
 }
@@ -1045,19 +1088,19 @@ async function saveParseSession() {
   if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
 
   try {
-    const { file, months, rows, overrides } = parseSession;
+    const { file, months, rows, overrides, byClass } = parseSession;
 
-    // 1. Apply overrides to the rows; collect any category changes to persist
-    //    as per-client mappings.
-    const finalRows = rows.map((r, i) => ({
-      ...r,
-      category: (i in overrides) ? overrides[i] : r.category,
-    }));
+    // 1. Apply overrides. Standard files key overrides by row index; by-Class
+    //    files key by account identity, and the override applies to every class.
+    const finalRows = byClass
+      ? rows.map((r) => ({ ...r, category: (pnlAcctKey(r) in overrides) ? overrides[pnlAcctKey(r)] : r.category }))
+      : rows.map((r, i) => ({ ...r, category: (i in overrides) ? overrides[i] : r.category }));
 
-    // 2. For every override that differs from what the global rules produced,
-    //    save a per-client coa_mappings row (number_exact). Re-running a parse
-    //    later will then auto-apply the same rule. Skip "ignore" mappings that
-    //    weren't unmatched to begin with (no rule needed for them).
+    // 2. Persist genuine overrides as per-client coa_mappings so future parses
+    //    auto-apply them. Skipped for by-Class files (overrides there are keyed
+    //    by account identity and apply straight to pnl_data; the Inn's mapping
+    //    rules are seeded via SQL).
+    if (!byClass) {
     const overrideEntries = Object.entries(overrides).filter(([k, v]) => {
       const orig = rows[k].category;
       return v !== orig;  // only persist genuine overrides
@@ -1117,6 +1160,7 @@ async function saveParseSession() {
         const { error: insErr } = await sb.from('coa_mappings').insert(mappingInserts);
         if (insErr) throw new Error('Failed to save per-client mappings: ' + insErr.message);
       }
+    }
     }
 
     // 3. Persist the actual P&L data
