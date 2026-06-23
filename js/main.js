@@ -10,10 +10,11 @@ import { mountFinancials, unmountFinancials } from './financials.js';
 import { mountKPI, unmountKPI } from './charts.js';
 import { mountPnlSummary, unmountPnlSummary } from './pnl-summary.js';
 import { mountDocuments, unmountDocuments } from './documents.js';
+import { mountHome as mountHomeView, unmountHome } from './home.js';
 
 const LAST_TAB_KEY = 'bg_client_portal_last_tab';
-const DEFAULT_TAB = 'financials';
-const TABS = ['financials', 'kpi', 'pnl-summary', 'documents', 'projections', 'messages'];
+const DEFAULT_TAB = 'home';
+const TABS = ['home', 'financials', 'kpi', 'pnl-summary', 'documents', 'projections', 'messages'];
 
 // App state
 const state = {
@@ -228,6 +229,9 @@ async function enterApp(user) {
     const saved = localStorage.getItem(LAST_CLIENT_KEY);
     const initial = state.clients.find((c) => c.id === saved) || state.clients[0];
     await setCurrentClient(initial.id);
+    // setCurrentClient mounts the active *client* tab; Home isn't client-scoped,
+    // so when it's the landing tab we mount it explicitly.
+    if (state.currentTab === 'home') await mountHomeTab();
   }
 }
 
@@ -283,6 +287,7 @@ function showNoClients() {
 // ---------------------------------------------------------------------
 
 const TAB_TITLES = {
+  home:        { title: 'Home',                       sub: 'Your clients and any open questions' },
   financials:  { title: 'Financials',                 sub: 'P&L, Prime Sheet, and other monthly documents' },
   kpi:         { title: 'KPI Dashboard',              sub: 'Trailing 13 months from your P&L data' },
   'pnl-summary': { title: 'Prime Sheet',              sub: 'Current month vs prior month and same month last year' },
@@ -303,8 +308,9 @@ async function switchTab(next) {
 
   updatePageHeader(state.clients.find((c) => c.id === state.currentClientId));
 
-  // Mount the new tab (only if we have a client)
-  if (state.currentClientId) await mountCurrentTab();
+  // Mount the new tab. Home isn't client-scoped; every other tab needs a client.
+  if (next === 'home') await mountHomeTab();
+  else if (state.currentClientId) await mountCurrentTab();
 }
 
 function highlightNav(tab) {
@@ -370,10 +376,27 @@ async function mountCurrentTab() {
   }
 }
 
+// Home isn't tied to a single client — it lists them all. Clicking a client
+// selects it and drops you on its Client Questions tab.
+async function mountHomeTab() {
+  await mountHomeView({
+    clients: state.clients,
+    isTeam: !!state.profile.is_team,
+    onPick: async (clientId) => {
+      state.currentClientId = clientId;
+      localStorage.setItem(LAST_CLIENT_KEY, clientId);
+      const sel = $('clientSelect');
+      if (sel) sel.value = clientId;
+      await switchTab('messages');
+    },
+  });
+}
+
 function unmountCurrentTab() {
   const t = state.currentTab;
   try {
-    if (t === 'financials') unmountFinancials();
+    if (t === 'home') unmountHome();
+    else if (t === 'financials') unmountFinancials();
     else if (t === 'kpi')   unmountKPI();
     else if (t === 'pnl-summary') unmountPnlSummary();
     else if (t === 'documents') unmountDocuments();
