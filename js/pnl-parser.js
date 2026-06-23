@@ -285,7 +285,8 @@ export function parsePnlByClass(arrayBuffer) {
   return { period, classes: classCols.map((c) => c.name), rowsByClass };
 }
 
-
+/** Convert "May 2025" / "January 2026" → "2025-05" / "2026-01". */
+function parseMonthLabel(label) {
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const m = label.match(/^([A-Za-z]+)\s+(\d{4})$/);
   if (!m) return null;
