@@ -216,9 +216,15 @@ async function enterApp(user) {
   $('loginScreen').style.display = 'none';
   $('appShell').style.display = 'block';
 
-  // Restore last tab (defaults to financials)
-  const savedTab = localStorage.getItem(LAST_TAB_KEY);
-  state.currentTab = TABS.includes(savedTab) ? savedTab : DEFAULT_TAB;
+  // Landing tab. Team members (Ed, Lydia, the Jennifers) always start on Home
+  // so the cross-client open-questions board is the first thing they see every
+  // time they open the portal. Clients resume their last tab, falling back to Home.
+  if (state.profile.is_team) {
+    state.currentTab = 'home';
+  } else {
+    const savedTab = localStorage.getItem(LAST_TAB_KEY);
+    state.currentTab = TABS.includes(savedTab) ? savedTab : DEFAULT_TAB;
+  }
   highlightNav(state.currentTab);
   showPane(state.currentTab);
 
