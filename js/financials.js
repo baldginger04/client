@@ -708,11 +708,19 @@ function sheetToHTML(sheet) {
     const isBlank = (text) => text === '';
 
     const labelText = plain(cellMatches[0][2]);
-    // Value cells are everything except the first (label) and last (Total).
-    // QBO files always have a Total column at the right.
-    const valueCells = cellMatches.slice(1, -1);
+    // Month value cells = the columns BETWEEN the label and the right-hand Total.
+    // A single-month QBO P&L has none of these (just Label + Total), so this slice
+    // is empty. Guard against [].every() === true, which would otherwise judge
+    // every row "all blank" and wipe the Total — the only value on a single-month
+    // sheet — leaving account names with no numbers.
     const totalCell = cellMatches[cellMatches.length - 1];
-    const allValueCellsBlank = valueCells.every((c) => isBlank(plain(c[2])));
+    const monthCells = cellMatches.slice(1, -1);
+    const monthsAllBlank = monthCells.length > 0 && monthCells.every((c) => isBlank(plain(c[2])));
+    // A true parent/header row has no value anywhere: every month blank (or there
+    // are no month columns) AND a blank Total.
+    const noValuesAnywhere =
+      (monthCells.length === 0 || monthCells.every((c) => isBlank(plain(c[2])))) &&
+      cellMatches.length > 1 && isBlank(plain(totalCell[2]));
 
     // Classify the row
     let extraClass = '';
@@ -722,7 +730,7 @@ function sheetToHTML(sheet) {
       extraClass = 'xlsx-row-subtotal';
     } else if (/^(Income|Expenses|Cost of Goods Sold|Other Income|Other Expenses)$/.test(labelText)) {
       extraClass = 'xlsx-row-section';
-    } else if (labelText !== '' && allValueCellsBlank && isBlank(plain(totalCell[2]))) {
+    } else if (labelText !== '' && noValuesAnywhere) {
       // A non-empty label with all-empty values is a parent section header
       // that QBO inserts above its children (e.g. "4900 Discounts and Refunds"
       // sitting above its sub-accounts). De-emphasize.
@@ -735,7 +743,7 @@ function sheetToHTML(sheet) {
     // month-like hits so a stray text cell can't masquerade as the header.
     if (!extraClass && !headerTagged) {
       const monthLike = (t) => /^[A-Za-z]{3,9}\.?\s*'?\d{2,4}$/.test(t);
-      const monthHits = valueCells.filter((c) => monthLike(plain(c[2]))).length;
+      const monthHits = monthCells.filter((c) => monthLike(plain(c[2]))).length;
       if (isBlank(labelText) && monthHits >= 2) {
         extraClass = 'xlsx-row-header';
         headerTagged = true;
@@ -749,8 +757,10 @@ function sheetToHTML(sheet) {
     const rewrittenCells = cellMatches.map((c, idx) => {
       const [_, attrs, content] = c;
       let newContent = rewriteNeg(content);
-      // Blank the Total cell if all values are empty
-      if (idx === cellMatches.length - 1 && allValueCellsBlank) {
+      // Blank the Total cell only on multi-month rows whose month columns are all
+      // empty (a QBO stray total on a header row). Never on single-month sheets,
+      // where the Total column holds the actual values.
+      if (idx === cellMatches.length - 1 && monthsAllBlank) {
         newContent = '';
       }
       return `<td${attrs}>${newContent}</td>`;
