@@ -36,6 +36,112 @@ const staged = new Map();  // 'new' | rootId  ->  File (an attachment awaiting s
 const $ = (id) => document.getElementById(id);
 
 // ---------------------------------------------------------------------
+// @mention autocomplete + rendering (users from Supabase taggable_users())
+// ---------------------------------------------------------------------
+let mentionUsers = [];   // [{ id, name, email|null }]
+async function loadMentionUsers() {
+  try {
+    const { data, error } = await sb.rpc('taggable_users');
+    if (error) throw error;
+    mentionUsers = (data || []).filter((u) => u && u.name);
+  } catch (e) { console.error('loadMentionUsers error:', e); }
+}
+function escRe(x){ return String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function mInitials(n){ return String(n||'').trim().split(/\s+/).map(w=>w[0]||'').join('').substring(0,2).toUpperCase(); }
+
+// esc() (HTML-escape) is defined below and hoisted. Bold each @Name, drop the "@".
+function mentionHtml(text) {
+  let html = esc(text || '');
+  const users = [...mentionUsers].sort((a, b) => b.name.length - a.name.length);
+  for (const u of users) {
+    const re = new RegExp('@' + escRe(esc(u.name)) + '(?![\\w])', 'giu');
+    html = html.replace(re, '<span class="mention">' + esc(u.name) + '</span>');
+  }
+  return html;
+}
+
+let mDD = null, mCtx = null;
+function mEnsureDD() {
+  if (mDD) return mDD;
+  mDD = document.createElement('div');
+  mDD.className = 'mention-dd';
+  mDD.style.display = 'none';
+  document.body.appendChild(mDD);
+  document.addEventListener('mousedown', (e) => {
+    if (mDDOpen() && !mDD.contains(e.target) && e.target !== mCtx.input) mClose();
+  });
+  return mDD;
+}
+function mClose(){ if (mDD) mDD.style.display = 'none'; mCtx = null; }
+function mDDOpen(){ return !!(mDD && mDD.style.display !== 'none' && mCtx); }
+function mQuery(input){
+  const pos = input.selectionStart;
+  if (pos !== input.selectionEnd) return null;
+  const m = input.value.slice(0, pos).match(/(?:^|\s)@([^\s@]{0,30})$/);
+  if (!m) return null;
+  return { start: pos - m[1].length - 1, query: m[1] };
+}
+function onMentionInput(e){
+  const input = e.target;
+  const q = mQuery(input);
+  if (!q) { mClose(); return; }
+  const ql = q.query.toLowerCase();
+  const matches = mentionUsers.filter((u) => {
+    const n = u.name.toLowerCase();
+    return !ql || n.startsWith(ql) || n.split(/\s+/).some((w) => w.startsWith(ql));
+  }).slice(0, 8);
+  if (!matches.length) { mClose(); return; }
+  mCtx = { input, start: q.start, items: matches, sel: 0 };
+  mRenderDD();
+}
+function mRenderDD(){
+  const dd = mEnsureDD();
+  const { input, items, sel } = mCtx;
+  dd.innerHTML = items.map((u, i) =>
+    `<div class="mention-opt${i===sel?' sel':''}" data-i="${i}"><span class="mention-av">${esc(mInitials(u.name))}</span><span>${esc(u.name)}</span></div>`).join('');
+  dd.querySelectorAll('.mention-opt').forEach((el) => {
+    el.onmousedown = (ev) => { ev.preventDefault(); mPick(parseInt(el.dataset.i, 10)); };
+  });
+  dd.style.display = 'block';
+  const r = input.getBoundingClientRect();
+  dd.style.minWidth = Math.min(Math.max(r.width, 180), 280) + 'px';
+  dd.style.left = (window.scrollX + r.left) + 'px';
+  dd.style.top = (window.scrollY + r.top - dd.offsetHeight - 4) + 'px';
+}
+function mMove(d){ if (!mCtx) return; const n=mCtx.items.length; mCtx.sel=(mCtx.sel+d+n)%n; mRenderDD(); }
+function mPick(i){
+  if (!mCtx) return;
+  const { input, start, items, sel } = mCtx;
+  const user = items[i==null?sel:i];
+  const pos = input.selectionStart;
+  if (!user) { mClose(); return; }
+  const insert = '@' + user.name + ' ';
+  const before = input.value.slice(0, start);
+  input.value = before + insert + input.value.slice(pos);
+  const caret = (before+insert).length;
+  mClose(); input.focus(); input.setSelectionRange(caret, caret);
+}
+function mKeydown(e){
+  if (!mDDOpen()) return false;
+  if (e.key === 'ArrowDown'){ e.preventDefault(); mMove(1); return true; }
+  if (e.key === 'ArrowUp'){ e.preventDefault(); mMove(-1); return true; }
+  if (e.key === 'Enter' || e.key === 'Tab'){ e.preventDefault(); mPick(); return true; }
+  if (e.key === 'Escape'){ e.preventDefault(); mClose(); return true; }
+  return false;
+}
+function injectMentionCSS(){
+  if (document.getElementById('mention-css')) return;
+  const st = document.createElement('style');
+  st.id = 'mention-css';
+  st.textContent = '.mention{font-weight:600;color:#D85B31}'
+    + '.mention-dd{position:absolute;z-index:9999;background:#fff;border:1px solid #d0d4da;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);padding:4px;max-height:240px;overflow-y:auto}'
+    + '.mention-opt{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;font-size:13px;color:#1a1c1e;cursor:pointer;white-space:nowrap}'
+    + '.mention-opt.sel{background:#f1f0e9}'
+    + '.mention-av{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#fff;background:#5a6070;flex-shrink:0}';
+  document.head.appendChild(st);
+}
+
+// ---------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------
 
@@ -48,6 +154,7 @@ export async function loadMessages({ clientId, userId, author, isTeam }) {
 
   staged.clear();
   bindOnce();
+  loadMentionUsers();
   resetComposer();
   cache = [];
   await fetchAndRender();
@@ -66,6 +173,7 @@ export function unsubscribeMessages() {
 function bindOnce() {
   if (bound) return;
   bound = true;
+  injectMentionCSS();
 
   const sendBtn = $('composerSend');
   const input = $('composerInput');
@@ -76,8 +184,10 @@ function bindOnce() {
 
   if (sendBtn) sendBtn.addEventListener('click', submitQuestion);
   if (input) input.addEventListener('keydown', (e) => {
+    if (mKeydown(e)) return;
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitQuestion(); }
   });
+  if (input) input.addEventListener('input', onMentionInput);
   if (attachBtn && fileInput) attachBtn.addEventListener('click', () => fileInput.click());
   if (fileInput) fileInput.addEventListener('change', () => {
     addFiles('new', fileInput.files);
@@ -89,6 +199,8 @@ function bindOnce() {
   if (list) {
     list.addEventListener('click', onListClick);
     list.addEventListener('change', onListChange);
+    list.addEventListener('input', (e) => { if (e.target.classList && e.target.classList.contains('qc-reply-input')) onMentionInput(e); });
+    list.addEventListener('keydown', (e) => { if (e.target.classList && e.target.classList.contains('qc-reply-input')) mKeydown(e); });
   }
 }
 
@@ -367,7 +479,7 @@ function renderCard(root, replies) {
                 data-root-id="${esc(root.id)}" data-to="${clearTo}">${clearLabel}</button>
       </div>
 
-      <div class="msg-body">${esc(root.body || '')}${attachmentSlot(root)}</div>
+      <div class="msg-body">${mentionHtml(root.body || '')}${attachmentSlot(root)}</div>
 
       ${repliesHtml ? `<div class="qcard-replies">${repliesHtml}</div>` : ''}
 
@@ -401,7 +513,7 @@ function renderReply(r) {
         ${teamBadge}
         <span class="msg-time">${formatTime(r.created_at)}</span>
       </div>
-      <div class="msg-body">${esc(r.body || '')}${attachmentSlot(r)}</div>
+      <div class="msg-body">${mentionHtml(r.body || '')}${attachmentSlot(r)}</div>
     </div>
   `;
 }
