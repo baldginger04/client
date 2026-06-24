@@ -319,7 +319,7 @@ async function loadClientQuestionsBadge() {
       }
     }
     let count = 0;
-    latest.forEach((v) => { if (v.is_team === true) count++; });
+    latest.forEach(() => { count++; });   // any uncleared client-facing thread
     if (count > 0) {
       badge.textContent = count > 99 ? '99+' : String(count);
       badge.style.display = 'inline-flex';
