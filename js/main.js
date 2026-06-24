@@ -278,7 +278,69 @@ async function setCurrentClient(clientId) {
 
   // Hide the no-clients banner; remount whichever tab is active
   $('noClientsState').style.display = 'none';
+
+  // Refresh + (re)subscribe the "Client Questions" notification badge.
+  loadClientQuestionsBadge();
+  subscribeClientQuestionsBadge();
+
   await mountCurrentTab();
+}
+
+// ---------------------------------------------------------------------
+// Client Questions nav badge — lights up when the Bald Ginger team has
+// posted a client-facing message the client hasn't responded to yet.
+// "Latest message in a thread is from the team and not cleared" = awaiting
+// the client. Internal team notes (is_internal = true) are excluded here AND
+// blocked by RLS, so they never surface to the client or trigger the badge.
+// No per-user read state: it clears when the client replies (latest flips to
+// them) or the team resolves the thread.
+// ---------------------------------------------------------------------
+let cqBadgeChannel = null;
+
+async function loadClientQuestionsBadge() {
+  const badge = $('cqBadge');
+  if (!badge) return;
+  const clientId = state.currentClientId;
+  if (!clientId) { badge.style.display = 'none'; return; }
+  try {
+    const { data, error } = await sb
+      .from('messages')
+      .select('id, parent_message_id, is_team, created_at, cleared')
+      .eq('client_id', clientId)
+      .eq('is_internal', false)
+      .eq('cleared', false);
+    if (error) throw error;
+    const latest = new Map();  // thread root -> latest message meta
+    for (const m of (data || [])) {
+      const key = m.parent_message_id || m.id;
+      const cur = latest.get(key);
+      if (!cur || new Date(m.created_at) > new Date(cur.created_at)) {
+        latest.set(key, { created_at: m.created_at, is_team: m.is_team });
+      }
+    }
+    let count = 0;
+    latest.forEach((v) => { if (v.is_team === true) count++; });
+    if (count > 0) {
+      badge.textContent = count > 99 ? '99+' : String(count);
+      badge.style.display = 'inline-flex';
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch (err) {
+    console.error('loadClientQuestionsBadge error:', err);
+  }
+}
+
+function subscribeClientQuestionsBadge() {
+  if (cqBadgeChannel) { sb.removeChannel(cqBadgeChannel); cqBadgeChannel = null; }
+  const clientId = state.currentClientId;
+  if (!clientId) return;
+  cqBadgeChannel = sb
+    .channel(`cq-badge-${clientId}`)
+    .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'messages', filter: `client_id=eq.${clientId}` },
+        () => loadClientQuestionsBadge())
+    .subscribe();
 }
 
 function showNoClients() {
@@ -393,6 +455,8 @@ async function mountHomeTab() {
       localStorage.setItem(LAST_CLIENT_KEY, clientId);
       const sel = $('clientSelect');
       if (sel) sel.value = clientId;
+      loadClientQuestionsBadge();
+      subscribeClientQuestionsBadge();
       await switchTab('messages');
     },
   });

@@ -132,6 +132,7 @@ async function fetchAndRender() {
     .from('messages')
     .select('*')
     .eq('client_id', ctx.clientId)
+    .eq('is_internal', false)
     .order('created_at', { ascending: true });
 
   if (error) {
