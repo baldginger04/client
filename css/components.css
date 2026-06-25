@@ -391,8 +391,6 @@
 .xlsx-preview {
   margin-top: 8px;
   padding: 0;
-  width: max-content;
-  max-width: 100%;
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: var(--r);
@@ -403,7 +401,13 @@
   border-collapse: collapse;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  width: 100%;
 }
+/* Full-width statement look: the label column (first) absorbs the slack via
+   auto table-layout; value columns sit right-aligned like QBO/Excel. Wide
+   multi-month sheets still overflow-scroll with the first column frozen. */
+.xlsx-preview td:not(:first-child),
+.xlsx-preview th:not(:first-child) { text-align: right; }
 .xlsx-preview td, .xlsx-preview th {
   /* Light, neutral defaults. Inline styles emitted by SheetJS (bold via
      font-weight, indents via padding-left, number formats baked into text)
@@ -896,7 +900,7 @@
   align-items: flex-start;
 }
 .pnl-comments-doc {
-  flex: 0 1 auto;
+  flex: 1;
   min-width: 0;
   overflow-x: auto;
 }
