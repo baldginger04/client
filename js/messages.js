@@ -489,9 +489,9 @@ function renderCard(root, replies) {
                     placeholder="Write a reply…"></textarea>
           <div class="qc-reply-actions">
             <button type="button" class="attach-btn qc-attach" data-card="${esc(root.id)}"
-                    title="Attach a screenshot or PDF">📎</button>
+                    title="Attach a file">📎</button>
             <input type="file" class="qc-file" data-card="${esc(root.id)}"
-                   accept="image/*,.pdf" multiple hidden />
+                   multiple hidden />
             <button type="button" class="btn btn-primary btn-sm qc-reply-send"
                     data-root-id="${esc(root.id)}">Reply</button>
           </div>
@@ -540,7 +540,16 @@ function attachmentSlot(m) {
   }).join('');
 
   if (m.image_url) {
-    html += `<div class="att"><img src="${esc(m.image_url)}" alt="attachment" /></div>`;
+    // Legacy / cross-app field: Triple writes team-sent attachments here as a
+    // public URL. Render images inline (click to open) and any other file type
+    // as an open link, so team-sent documents aren't shown as broken images.
+    const u = String(m.image_url).split('?')[0];
+    if (isImageName(u)) {
+      html += `<div class="att"><a href="${esc(m.image_url)}" target="_blank" rel="noopener"><img src="${esc(m.image_url)}" alt="attachment" /></a></div>`;
+    } else {
+      const ext = (u.split('.').pop() || '').toUpperCase();
+      html += `<div class="att"><a class="att-file" href="${esc(m.image_url)}" target="_blank" rel="noopener">📎 Open file${ext ? ` (${ext})` : ''}</a></div>`;
+    }
   }
 
   return html ? `<div class="att-group">${html}</div>` : '';
