@@ -104,6 +104,22 @@ function bindUploadForm() {
   });
 }
 
+// #6 diagnostics: record cold-start upload-retry events to a Supabase table so
+// we can tell, over normal usage, whether the refresh+re-upload quirk still
+// occurs. Fire-and-forget and fully swallowed — diagnostics must never break or
+// slow an upload. Requires table public.upload_diagnostics (team-only RLS).
+function logUploadDiag(event, storagePath, detail) {
+  try {
+    sb.from('upload_diagnostics').insert({
+      client_id: state.clientId || null,
+      user_id: state.userId || null,
+      event: event,
+      storage_path: storagePath || null,
+      detail: detail || null,
+    }).then(function () {}, function () {});
+  } catch (_) { /* never throw from diagnostics */ }
+}
+
 async function handleUpload() {
   const fileInput = document.getElementById('uploadFile');
   const typeSelect = document.getElementById('uploadType');
@@ -152,6 +168,9 @@ async function handleUpload() {
       // key errors from upsert:false.
       console.warn('Upload timed out, retrying once...');
       setStatus(status, '', 'Still uploading…');
+      const originalPath = storagePath;
+      // #6 telemetry: the cold-start stall just fired.
+      logUploadDiag('coldstart_retry', originalPath, 'file=' + safeName);
       const retryPath = `${state.clientId}/${period}_${Date.now()}_retry_${safeName}`;
       const retry = await Promise.race([
         sb.storage.from(BUCKET).upload(retryPath, file, {
@@ -161,10 +180,19 @@ async function handleUpload() {
         }),
         new Promise((_, rej) => setTimeout(() => rej(new Error('TIMEOUT_AGAIN')), 45000)),
       ]).catch((e) => ({ error: e }));
-      if (retry.error) throw new Error('Upload timed out twice. Check your connection and try again.');
+      if (retry.error) {
+        logUploadDiag('timeout_twice', originalPath, 'file=' + safeName);
+        throw new Error('Upload timed out twice. Check your connection and try again.');
+      }
       // Retry succeeded — use the retry path for the DB insert below
       storagePath = retryPath;
       upErr = null;
+      logUploadDiag('retry_succeeded', retryPath, 'orphan=' + originalPath);
+      // The first attempt may have completed server-side before the client gave
+      // up, leaving an orphan at originalPath. Best-effort clean + note if found.
+      sb.storage.from(BUCKET).remove([originalPath])
+        .then(function (r) { if (r && r.data && r.data.length) logUploadDiag('orphan_removed', originalPath, null); })
+        .catch(function () {});
     }
     if (upErr) throw upErr;
 
