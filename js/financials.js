@@ -554,13 +554,20 @@ async function expandFile(f, scrollTo) {
 
   try {
     const buffer = await downloadAsBuffer(f.storage_path);
-    // cellStyles: true tells SheetJS to preserve style information per cell.
-    // Community Edition reads number formats, bold/italic/underline, and
-    // indentation. Cell fills and font colors require Pro and won't come
-    // through here — known limitation, acceptable for our use.
+    // SheetJS Community Edition reads values, number formats, and structure but
+    // drops cell fills + font colors. We layer those back in with ExcelJS (free,
+    // open-source), lazy-loaded only here so it never touches initial page load.
+    // If ExcelJS fails to load, we fall back to the plain (color-less) render.
     const wb = XLSX.read(buffer, { type: 'array', cellStyles: true });
-    host.innerHTML = renderWorkbookHTML(wb);
-    bindSheetTabs(host, wb);
+    let colorMaps = {};
+    try {
+      await ensureExcelJS();
+      colorMaps = await buildColorMaps(buffer);
+    } catch (e) {
+      console.warn('Cell-color layer skipped:', e);
+    }
+    host.innerHTML = renderWorkbookHTML(wb, colorMaps);
+    bindSheetTabs(host, wb, colorMaps);
     if (scrollTo) host.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     // Layer the commenting UI on top of the rendered preview. Runs after
     // the host is populated; activateCommenting wraps the host contents in
@@ -608,7 +615,104 @@ export async function downloadAsBuffer(storagePath) {
   return await data.arrayBuffer();
 }
 
-export function renderWorkbookHTML(wb) {
+// =====================================================================
+// CELL COLOR LAYER (ExcelJS)
+// SheetJS CE drops cell fills + font colors on read. We re-read the same bytes
+// with ExcelJS purely to recover those colors, key them by cell address, and
+// inject them into the rendered table. ExcelJS is lazy-loaded so it never
+// affects initial page load.
+// =====================================================================
+
+let _exceljsPromise = null;
+function ensureExcelJS() {
+  if (window.ExcelJS) return Promise.resolve();
+  if (_exceljsPromise) return _exceljsPromise;
+  _exceljsPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => { _exceljsPromise = null; reject(new Error('Failed to load ExcelJS')); };
+    document.head.appendChild(s);
+  });
+  return _exceljsPromise;
+}
+
+// Default Office theme palette, indexed the way Excel stores the `theme`
+// attribute (0=lt1, 1=dk1, 2=lt2, 3=dk2, 4..9=accent1..6, 10=hlink, 11=folHlink).
+const THEME_COLORS = ['FFFFFF','000000','E7E6E6','44546A','4472C4','ED7D31','A5A5A5','FFC000','5B9BD5','70AD47','0563C1','954F72'];
+// Legacy 56-color indexed palette (the subset that actually shows up in practice).
+const INDEXED_COLORS = {
+  0:'000000',1:'FFFFFF',2:'FF0000',3:'00FF00',4:'0000FF',5:'FFFF00',6:'FF00FF',7:'00FFFF',
+  8:'000000',9:'FFFFFF',10:'FF0000',11:'00FF00',12:'0000FF',13:'FFFF00',14:'FF00FF',15:'00FFFF',
+  16:'800000',17:'008000',18:'000080',19:'808000',20:'800080',21:'008080',22:'C0C0C0',23:'808080',
+  24:'9999FF',25:'993366',26:'FFFFCC',27:'CCFFFF',28:'660066',29:'FF8080',30:'0066CC',31:'CCCCFF',
+  32:'000080',33:'FF00FF',34:'FFFF00',35:'00FFFF',36:'800080',37:'800000',38:'008080',39:'0000FF',
+  40:'00CCFF',41:'CCFFFF',42:'CCFFCC',43:'FFFF99',44:'99CCFF',45:'FF99CC',46:'CC99FF',47:'FFCC99',
+  48:'3366FF',49:'33CCCC',50:'99CC00',51:'FFCC00',52:'FF9900',53:'FF6600',54:'666699',55:'969696',
+  56:'003366',57:'339966',58:'003300',59:'333300',60:'993300',61:'993366',62:'333399',63:'333333'
+};
+
+function clampByte(x) { return Math.max(0, Math.min(255, Math.round(x))); }
+function toHex2(x) { return clampByte(x).toString(16).padStart(2, '0').toUpperCase(); }
+
+// OOXML tint: negative darkens, positive lightens. Per-channel linear approx of
+// the spec's HSL-luminance method — visually close for the small tints QBO uses.
+function applyTint(hex, tint) {
+  if (!hex) return null;
+  if (!tint) return hex;
+  const r = parseInt(hex.slice(0,2),16), g = parseInt(hex.slice(2,4),16), b = parseInt(hex.slice(4,6),16);
+  const adj = (ch) => tint < 0 ? ch * (1 + tint) : ch * (1 - tint) + 255 * tint;
+  return toHex2(adj(r)) + toHex2(adj(g)) + toHex2(adj(b));
+}
+
+// ExcelJS color object -> 'RRGGBB' (no #), or null for default/auto/unknown.
+function resolveColor(col) {
+  if (!col) return null;
+  if (col.argb) { const a = String(col.argb); return a.length === 8 ? a.slice(2) : a; }
+  if (typeof col.theme === 'number') return applyTint(THEME_COLORS[col.theme] || null, col.tint);
+  if (typeof col.indexed === 'number') {
+    if (col.indexed === 64 || col.indexed === 65) return null; // automatic fg/bg
+    return INDEXED_COLORS[col.indexed] || null;
+  }
+  return null;
+}
+
+function fillToHex(fill) {
+  if (!fill || fill.type !== 'pattern' || fill.pattern === 'none') return null;
+  const hex = resolveColor(fill.fgColor); // solid fills render the fgColor
+  if (!hex || hex.toUpperCase() === 'FFFFFF') return null; // white == no visible fill
+  return '#' + hex;
+}
+
+function fontToHex(font) {
+  if (!font || !font.color) return null;
+  const hex = resolveColor(font.color);
+  if (!hex || hex.toUpperCase() === '000000') return null; // default text -> leave to CSS
+  return '#' + hex;
+}
+
+// Re-read the workbook bytes with ExcelJS; return { sheetName: { 'A1': {bg,fg} } }
+// containing only cells that carry a non-default fill or font color.
+async function buildColorMaps(buffer) {
+  const ewb = new ExcelJS.Workbook();
+  await ewb.xlsx.load(buffer.slice(0));
+  const maps = {};
+  ewb.eachSheet((ws) => {
+    const m = {};
+    ws.eachRow({ includeEmpty: true }, (row) => {
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        const bg = fillToHex(cell.fill);
+        const fg = fontToHex(cell.font);
+        if (bg || fg) m[cell.address] = { bg, fg };
+      });
+    });
+    maps[ws.name] = m;
+  });
+  return maps;
+}
+
+export function renderWorkbookHTML(wb, colorMaps = {}) {
   const sheetNames = wb.SheetNames;
   if (sheetNames.length === 0) return '<div class="state-msg">Empty workbook.</div>';
 
@@ -623,11 +727,11 @@ export function renderWorkbookHTML(wb) {
   }
 
   // Render first sheet
-  html += '<div class="xlsx-preview" id="xlsxPreviewBody">' + sheetToHTML(wb.Sheets[sheetNames[0]]) + '</div>';
+  html += '<div class="xlsx-preview" id="xlsxPreviewBody">' + sheetToHTML(wb.Sheets[sheetNames[0]], colorMaps[sheetNames[0]]) + '</div>';
   return html;
 }
 
-export function bindSheetTabs(host, wb) {
+export function bindSheetTabs(host, wb, colorMaps = {}) {
   const tabs = host.querySelectorAll('.sheet-tab');
   const body = host.querySelector('#xlsxPreviewBody');
   if (!tabs.length || !body) return;
@@ -636,12 +740,12 @@ export function bindSheetTabs(host, wb) {
       tabs.forEach((x) => x.classList.remove('active'));
       t.classList.add('active');
       const name = t.dataset.sheet;
-      body.innerHTML = sheetToHTML(wb.Sheets[name]);
+      body.innerHTML = sheetToHTML(wb.Sheets[name], colorMaps[name]);
     });
   });
 }
 
-function sheetToHTML(sheet) {
+function sheetToHTML(sheet, colorMap) {
   if (!sheet) return '<div class="state-msg">Empty sheet.</div>';
   // sheet_to_html emits a <table> with cell `style` attributes when the
   // workbook was read with cellStyles:true. We strip the <html><body>
@@ -775,6 +879,24 @@ function sheetToHTML(sheet) {
     }
     return `<tr${trAttrs}>${newInner}</tr>`;
   });
+
+  // Color layer: apply QBO's cell fills + font colors (recovered via ExcelJS,
+  // keyed by the sjs-<address> id that sheet_to_html stamps on every <td>).
+  // Only non-default colors are present in the map, so default rows keep their
+  // existing row-class styling untouched.
+  if (colorMap) {
+    table = table.replace(/<td([^>]*)>/g, (full, attrs) => {
+      const m = attrs.match(/id="sjs-([A-Z]+\d+)"/);
+      if (!m) return full;
+      const c = colorMap[m[1]];
+      if (!c || (!c.bg && !c.fg)) return full;
+      const style = `${c.bg ? `background:${c.bg};` : ''}${c.fg ? `color:${c.fg};` : ''}`;
+      if (/style="/.test(attrs)) {
+        return `<td${attrs.replace(/style="([^"]*)"/, (s, inner) => `style="${inner};${style}"`)}>`;
+      }
+      return `<td${attrs} style="${style}">`;
+    });
+  }
 
   return table;
 }
