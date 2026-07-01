@@ -10,6 +10,7 @@ import { mountFinancials, unmountFinancials } from './financials.js';
 import { mountKPI, unmountKPI } from './charts.js';
 import { mountPnlSummary, unmountPnlSummary } from './pnl-summary.js';
 import { mountDocuments, unmountDocuments } from './documents.js';
+import { mountProjections, unmountProjections } from './projections.js';
 import { mountHome as mountHomeView, unmountHome } from './home.js';
 
 const LAST_TAB_KEY = 'bg_client_portal_last_tab';
@@ -435,8 +436,9 @@ async function mountCurrentTab() {
         author: state.profile.full_name || state.profile.email,
         isTeam: !!state.profile.is_team,
       });
+    } else if (t === 'projections') {
+      await mountProjections({ clientId, isTeam: !!state.profile.is_team, userId: state.user.id });
     }
-    // projections: nothing to mount; placeholder "coming soon" card.
   } catch (err) {
     // Defensive: mount functions also handle their own errors, but if one
     // throws synchronously, we don't want it to break tab switching.
@@ -471,6 +473,7 @@ function unmountCurrentTab() {
     else if (t === 'pnl-summary') unmountPnlSummary();
     else if (t === 'documents') unmountDocuments();
     else if (t === 'messages') unsubscribeMessages();
+    else if (t === 'projections') unmountProjections();
   } catch (err) {
     console.error(`unmount(${t}) failed:`, err);
   }
