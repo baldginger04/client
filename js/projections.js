@@ -87,7 +87,7 @@ export function unmountProjections() { ctx = null; store = null; }
 function renderShell(pane) {
   const tabs = ctx.isTeam
     ? [['log', 'Receiving log'], ['sales', 'Enter sales'], ['reconcile', 'Month-end review'], ['setup', 'Setup']]
-    : [['log', 'Receiving log']];
+    : [['log', 'Receiving log'], ['reconcile', 'Month-end review']];
   const nav = tabs.map(([k, l]) => `<button data-sub="${k}" class="${store.sub === k ? 'on' : ''}">${l}</button>`).join('');
   pane.innerHTML = pjStyles() + `
   <div class="pj-wrap">
@@ -108,7 +108,7 @@ function renderActive() {
   if (!el) return;
   if (store.sub === 'setup') renderSetup(el);
   else if (store.sub === 'sales') renderSales(el);
-  else if (store.sub === 'reconcile') mountReconcile({ container: el, clientId: ctx.clientId, userId: ctx.userId });
+  else if (store.sub === 'reconcile') mountReconcile({ container: el, clientId: ctx.clientId, userId: ctx.userId, isTeam: ctx.isTeam });
   else renderLog(el);
 }
 
