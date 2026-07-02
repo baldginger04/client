@@ -6,6 +6,7 @@
 // Clients get a placeholder until the pace-to-goal view lands in a later slice.
 
 import { sb } from './config.js';
+import { mountReconcile } from './reconcile.js';
 
 const PANE = 'tab-projections';
 const CATS = [
@@ -85,7 +86,7 @@ export function unmountProjections() { ctx = null; store = null; }
 /* ---------- shell + sub-nav ---------- */
 function renderShell(pane) {
   const tabs = ctx.isTeam
-    ? [['log', 'Receiving log'], ['sales', 'Enter sales'], ['setup', 'Setup']]
+    ? [['log', 'Receiving log'], ['sales', 'Enter sales'], ['reconcile', 'Month-end review'], ['setup', 'Setup']]
     : [['log', 'Receiving log']];
   const nav = tabs.map(([k, l]) => `<button data-sub="${k}" class="${store.sub === k ? 'on' : ''}">${l}</button>`).join('');
   pane.innerHTML = pjStyles() + `
@@ -107,6 +108,7 @@ function renderActive() {
   if (!el) return;
   if (store.sub === 'setup') renderSetup(el);
   else if (store.sub === 'sales') renderSales(el);
+  else if (store.sub === 'reconcile') mountReconcile({ container: el, clientId: ctx.clientId, userId: ctx.userId });
   else renderLog(el);
 }
 
