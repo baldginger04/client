@@ -32,6 +32,13 @@ function rangeLabel(mon) {
   const m = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   return `${m(mon)} – ${m(addDays(mon, 6))}`;
 }
+function weekdayRange(mon) {
+  const e = addDays(mon, 6);
+  const fmt = (d) => d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  let label = `${fmt(mon)} – ${fmt(e)}`;
+  if (e.getFullYear() !== new Date().getFullYear()) label += `, ${e.getFullYear()}`;
+  return label;
+}
 function firstOfMonthISO(d = new Date()) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; }
 function firstOfMonthDate(d = new Date()) { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function lastOfMonthDate(d) { return new Date(d.getFullYear(), d.getMonth() + 1, 0); }
@@ -136,7 +143,7 @@ async function renderSales(el) {
     </div>
     <div class="pj-weeknav">
       <button class="pj-wbtn" id="pjPrev">‹</button>
-      <div class="pj-wlabel"><span class="pj-wrel ${tone}">${rel}</span><span class="pj-wrange">${rangeLabel(store.week)} · Mon–Sun</span></div>
+      <div class="pj-wlabel"><span class="pj-wrel ${tone}">${rel}</span><span class="pj-wrange">${weekdayRange(store.week)}</span></div>
       <button class="pj-wbtn" id="pjNext">›</button>
       <button class="pj-today" id="pjThis">This week</button>
     </div>
@@ -164,11 +171,79 @@ async function renderSales(el) {
   }
   const byDate = {}; rows.forEach((r) => { byDate[r.sales_date] = r; });
 
+  let arows = [];
+  try {
+    const ra = await sb.from('projection_actuals').select('sales_date,food_revenue,lbw_revenue')
+      .eq('client_id', ctx.clientId).gte('sales_date', ymd(dates[0])).lte('sales_date', ymd(dates[6]));
+    if (ra.error) throw ra.error;
+    arows = ra.data || [];
+  } catch (e) { arows = []; }
+  const byDateA = {}; arows.forEach((r) => { byDateA[r.sales_date] = r; });
+  const projF = dates.reduce((s, d) => s + num(byDate[ymd(d)]?.food_revenue), 0);
+  const projL = dates.reduce((s, d) => s + num(byDate[ymd(d)]?.lbw_revenue), 0);
+
   const body = el.querySelector('#pjSalesBody');
-  if (method === 'revenue_weekly') body.innerHTML = revenueWeeklyForm(dates, byDate, prof);
-  else if (method === 'covers_weekly') body.innerHTML = coversWeeklyForm(dates, byDate, prof);
-  else body.innerHTML = coversDailyForm(dates, byDate, prof);
+  let formHtml;
+  if (method === 'revenue_weekly') formHtml = revenueWeeklyForm(dates, byDate, prof);
+  else if (method === 'covers_weekly') formHtml = coversWeeklyForm(dates, byDate, prof);
+  else formHtml = coversDailyForm(dates, byDate, prof);
+  body.innerHTML = formHtml + actualsCard(dates, byDateA, prof, projF, projL);
   wireSales(el, method, dates, prof);
+  wireActuals(el, dates, prof, projF, projL);
+}
+
+function actualsCard(dates, byDateA, prof, projF, projL) {
+  const lbw = tracksLbw(prof);
+  const aF = dates.reduce((s, d) => s + num(byDateA[ymd(d)]?.food_revenue), 0);
+  const aL = dates.reduce((s, d) => s + num(byDateA[ymd(d)]?.lbw_revenue), 0);
+  return `
+  <div class="pj-actuals">
+    <div class="pj-ahead">Actual sales <span>enter once the week has closed</span></div>
+    <div class="pj-arow">
+      <div class="pj-bigin"><label>Actual food · week</label>
+        <div class="pj-money big"><span>$</span><input type="number" min="0" step="1" id="pjAFood" value="${aF ? Math.round(aF) : ''}"></div>
+        <div class="pj-aproj">Projected ${money(projF)}</div></div>
+      ${lbw ? `<div class="pj-bigin"><label>Actual LBW · week</label>
+        <div class="pj-money big"><span>$</span><input type="number" min="0" step="1" id="pjALbw" value="${aL ? Math.round(aL) : ''}"></div>
+        <div class="pj-aproj">Projected ${money(projL)}</div></div>` : ''}
+    </div>
+    <div class="pj-avar" id="pjAVar"></div>
+    <div class="pj-save"><button class="pj-btn" id="pjSaveActual">Save actuals</button>
+      <span class="pj-note" id="pjActualMsg"></span></div>
+  </div>`;
+}
+
+function wireActuals(el, dates, prof, projF, projL) {
+  const lbw = tracksLbw(prof);
+  const varEl = el.querySelector('#pjAVar');
+  function compute() {
+    const aF = num(el.querySelector('#pjAFood')?.value);
+    const aL = lbw ? num(el.querySelector('#pjALbw')?.value) : 0;
+    const a = aF + aL, p = projF + projL;
+    if (!a) { varEl.innerHTML = ''; return; }
+    const d = a - p, pct = p ? (d / p * 100) : 0, ahead = d >= 0;
+    varEl.innerHTML = `Actual <b>${money(a)}</b> vs projected ${money(p)} — <span class="${ahead ? 'up' : 'down'}">${ahead ? '+' : '−'}${money(Math.abs(d))}${p ? ` (${ahead ? '+' : '−'}${Math.abs(pct).toFixed(1)}%)` : ''}</span>`;
+  }
+  ['#pjAFood', '#pjALbw'].forEach((s) => { const i = el.querySelector(s); if (i) i.addEventListener('input', compute); });
+  compute();
+  el.querySelector('#pjSaveActual').addEventListener('click', () => saveActuals(el, dates, prof));
+}
+
+async function saveActuals(el, dates, prof) {
+  const btn = el.querySelector('#pjSaveActual');
+  const msg = el.querySelector('#pjActualMsg');
+  const setMsg = (t, bad) => { if (msg) { msg.textContent = t; msg.style.color = bad ? 'var(--red)' : 'var(--green)'; } };
+  const lbw = tracksLbw(prof);
+  const aF = num(el.querySelector('#pjAFood')?.value);
+  const aL = lbw ? num(el.querySelector('#pjALbw')?.value) : 0;
+  const out = dates.map((d) => ({ client_id: ctx.clientId, sales_date: ymd(d), food_revenue: aF / 7, lbw_revenue: lbw ? aL / 7 : 0, covers: null, entered_by: ctx.userId, entered_at: new Date().toISOString() }));
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Saving…'; setMsg('', false);
+  try {
+    const r = await sb.from('projection_actuals').upsert(out, { onConflict: 'client_id,sales_date' });
+    if (r.error) throw r.error;
+    setMsg('Saved.', false);
+  } catch (e) { setMsg('Error: ' + e.message, true); }
+  finally { btn.disabled = false; btn.textContent = orig; }
 }
 
 function tracksLbw(prof) { return (prof.categories || []).includes('lbw'); }
@@ -738,6 +813,15 @@ function pjStyles() {
     #tab-projections .pj-sum div{display:flex;flex-direction:column;gap:3px}
     #tab-projections .pj-sum span{font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
     #tab-projections .pj-sum b{font-family:var(--font-display);font-weight:800;font-size:18px;color:var(--navy)}
+    #tab-projections .pj-actuals{margin-top:22px;padding-top:20px;border-top:1px dashed var(--border)}
+    #tab-projections .pj-ahead{font-family:var(--font-display);font-weight:800;font-size:15px;color:var(--text)}
+    #tab-projections .pj-ahead span{font-family:var(--font-body);font-weight:500;font-size:12px;color:var(--text3);margin-left:8px}
+    #tab-projections .pj-arow{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap;margin-top:12px}
+    #tab-projections .pj-aproj{font-size:11.5px;color:var(--text3);font-weight:600;margin-top:5px}
+    #tab-projections .pj-avar{margin-top:14px;font-size:14px;color:var(--text2);font-weight:500}
+    #tab-projections .pj-avar b{font-family:var(--font-display);font-weight:800;color:var(--navy)}
+    #tab-projections .pj-avar .up{color:var(--green);font-weight:700}
+    #tab-projections .pj-avar .down{color:var(--coral);font-weight:700}
     #tab-projections .pj-empty{text-align:center;padding:64px 20px;color:var(--text3)}
     #tab-projections .pj-empty-emoji{font-size:34px;margin-bottom:12px}
     #tab-projections .pj-empty-t{font-family:var(--font-display);font-weight:700;font-size:17px;color:var(--text2)}
