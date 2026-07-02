@@ -37,6 +37,14 @@ function firstOfMonthDate(d = new Date()) { return new Date(d.getFullYear(), d.g
 function lastOfMonthDate(d) { return new Date(d.getFullYear(), d.getMonth() + 1, 0); }
 function addMonths(d, k) { return new Date(d.getFullYear(), d.getMonth() + k, 1); }
 function monthName(d) { return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }); }
+function upcomingMonday() { return addDays(mondayOf(new Date()), 7); }
+function relativeWeek(mon) {
+  const w = Math.round((mon.getTime() - mondayOf(new Date()).getTime()) / (7 * 86400000));
+  if (w === 0) return 'This week';
+  if (w === 1) return 'Next week';
+  if (w === -1) return 'Last week';
+  return w > 0 ? `In ${w} weeks` : `${-w} weeks ago`;
+}
 function monthLabel(d = new Date()) { return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }); }
 function money(n) { return '$' + (Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 0 }); }
 function num(v) { const x = parseFloat(v); return isFinite(x) ? x : 0; }
@@ -57,7 +65,7 @@ export async function mountProjections({ clientId, isTeam, userId }) {
     if (p.error) throw p.error;
     if (g.error) throw g.error;
     const defaultSub = ctx.isTeam ? (p.data ? 'log' : 'setup') : 'log';
-    store = { profile: p.data || null, goals: g.data || [], week: mondayOf(new Date()), month: firstOfMonthDate(), editing: null, editingPath: null, pendingImage: null, sub: defaultSub };
+    store = { profile: p.data || null, goals: g.data || [], week: upcomingMonday(), month: firstOfMonthDate(), editing: null, editingPath: null, pendingImage: null, sub: defaultSub };
   } catch (e) {
     pane.innerHTML = pjStyles() + `<div class="pj-wrap"><div class="pj-err">Couldn't load: ${esc(e.message)}</div></div>`;
     return;
@@ -119,10 +127,16 @@ async function renderSales(el) {
   const needsBits = coverMethod && (prof.avg_check == null || prof.food_mix_pct == null);
   const dates = weekDates(store.week);
 
+  const rel = relativeWeek(store.week);
+  const tone = rel === 'This week' ? 'now' : (store.week.getTime() < mondayOf(new Date()).getTime() ? 'past' : 'future');
   el.innerHTML = `
+    <div class="pj-shead">
+      <div class="pj-title">Sales projection</div>
+      <div class="pj-sub">Forecast the week you're operating — receiving targets pace against these numbers.</div>
+    </div>
     <div class="pj-weeknav">
       <button class="pj-wbtn" id="pjPrev">‹</button>
-      <div class="pj-wlabel">${rangeLabel(store.week)}<span>Mon–Sun</span></div>
+      <div class="pj-wlabel"><span class="pj-wrel ${tone}">${rel}</span><span class="pj-wrange">${rangeLabel(store.week)} · Mon–Sun</span></div>
       <button class="pj-wbtn" id="pjNext">›</button>
       <button class="pj-today" id="pjThis">This week</button>
     </div>
@@ -702,6 +716,12 @@ function pjStyles() {
     #tab-projections .pj-wbtn:hover{border-color:var(--navy);color:var(--navy)}
     #tab-projections .pj-wlabel{font-family:var(--font-display);font-weight:800;font-size:17px;color:var(--text);display:flex;flex-direction:column;line-height:1.15}
     #tab-projections .pj-wlabel span{font-family:var(--font-body);font-weight:500;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em}
+    #tab-projections .pj-shead{margin-bottom:14px}
+    #tab-projections .pj-wlabel .pj-wrel{order:-1;font-family:var(--font-body);font-weight:700;font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;padding:2px 8px;border-radius:999px;width:fit-content;margin-bottom:3px}
+    #tab-projections .pj-wlabel .pj-wrel.now{background:#eef1f8;color:var(--navy)}
+    #tab-projections .pj-wlabel .pj-wrel.future{background:#fde9df;color:var(--coral)}
+    #tab-projections .pj-wlabel .pj-wrel.past{background:var(--warm);color:var(--text3)}
+    #tab-projections .pj-wlabel .pj-wrange{font-family:var(--font-display);font-weight:800;font-size:17px;color:var(--text);text-transform:none;letter-spacing:-.01em}
     #tab-projections .pj-today{margin-left:6px;border:1px solid var(--border);background:var(--bg);border-radius:999px;padding:6px 13px;font-size:12px;font-weight:600;color:var(--text2);cursor:pointer}
     #tab-projections .pj-context{font-size:12.5px;color:var(--text3);font-weight:600}
     #tab-projections .pj-bigrow{display:flex;gap:22px;align-items:flex-end;flex-wrap:wrap;margin-bottom:6px}
