@@ -56,7 +56,14 @@ function relativeWeek(mon) {
 }
 function monthLabel(d = new Date()) { return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }); }
 function money(n) { return '$' + (Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 0 }); }
-function num(v) { const x = parseFloat(v); return isFinite(x) ? x : 0; }
+function num(v) { const x = parseFloat(String(v).replace(/,/g, '')); return isFinite(x) ? x : 0; }
+function fmtComma(n) { return (Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 }); }
+function attachCommaInputs(el) {
+  el.querySelectorAll('.pj-comma').forEach((inp) => {
+    inp.addEventListener('focus', () => { if (inp.value.trim() !== '') inp.value = String(num(inp.value)); });
+    inp.addEventListener('blur', () => { if (inp.value.trim() !== '') inp.value = fmtComma(num(inp.value)); });
+  });
+}
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 /* ---------- mount ---------- */
@@ -211,10 +218,10 @@ function actualsCard(dates, byDateA, prof, projF, projL) {
     <div class="pj-ahead">Actual sales <span>enter once the week has closed</span></div>
     <div class="pj-arow">
       <div class="pj-bigin"><label>Actual food · week</label>
-        <div class="pj-money big"><span>$</span><input type="number" min="0" step="1" id="pjAFood" value="${aF ? Math.round(aF) : ''}"></div>
+        <div class="pj-money big"><span>$</span><input type="text" inputmode="numeric" class="pj-comma" id="pjAFood" value="${aF ? fmtComma(Math.round(aF)) : ''}"></div>
         <div class="pj-aproj">Projected ${money(projF)}</div></div>
       ${lbw ? `<div class="pj-bigin"><label>Actual LBW · week</label>
-        <div class="pj-money big"><span>$</span><input type="number" min="0" step="1" id="pjALbw" value="${aL ? Math.round(aL) : ''}"></div>
+        <div class="pj-money big"><span>$</span><input type="text" inputmode="numeric" class="pj-comma" id="pjALbw" value="${aL ? fmtComma(Math.round(aL)) : ''}"></div>
         <div class="pj-aproj">Projected ${money(projL)}</div></div>` : ''}
     </div>
     <div class="pj-avar" id="pjAVar"></div>
@@ -224,6 +231,7 @@ function actualsCard(dates, byDateA, prof, projF, projL) {
 }
 
 function wireActuals(el, dates, prof, projF, projL) {
+  attachCommaInputs(el);
   const lbw = tracksLbw(prof);
   const varEl = el.querySelector('#pjAVar');
   function compute() {
@@ -265,9 +273,9 @@ function revenueWeeklyForm(dates, byDate, prof) {
   return `
     <div class="pj-bigrow">
       <div class="pj-bigin"><label>Food revenue · week</label>
-        <div class="pj-money big"><span>$</span><input type="number" min="0" step="1" id="pjFoodW" value="${foodW ? Math.round(foodW) : ''}"></div></div>
+        <div class="pj-money big"><span>$</span><input type="text" inputmode="numeric" class="pj-comma" id="pjFoodW" value="${foodW ? fmtComma(Math.round(foodW)) : ''}"></div></div>
       ${lbw ? `<div class="pj-bigin"><label>LBW revenue · week</label>
-        <div class="pj-money big"><span>$</span><input type="number" min="0" step="1" id="pjLbwW" value="${lbwW ? Math.round(lbwW) : ''}"></div></div>` : ''}
+        <div class="pj-money big"><span>$</span><input type="text" inputmode="numeric" class="pj-comma" id="pjLbwW" value="${lbwW ? fmtComma(Math.round(lbwW)) : ''}"></div></div>` : ''}
     </div>
     ${salesSummary(prof)}${saveBar()}`;
 }
@@ -276,7 +284,7 @@ function coversWeeklyForm(dates, byDate, prof) {
   return `
     <div class="pj-bigrow">
       <div class="pj-bigin"><label>Covers · week</label>
-        <div class="pj-money big"><input type="number" min="0" step="1" id="pjCoversW" value="${coversW || ''}" style="width:120px"><span>guests</span></div></div>
+        <div class="pj-money big"><input type="text" inputmode="numeric" class="pj-comma" id="pjCoversW" value="${coversW ? fmtComma(coversW) : ''}" style="width:120px"><span>guests</span></div></div>
       <div class="pj-context">× ${money(prof.avg_check)} avg check · ${Math.round(prof.food_mix_pct * 100)}% food</div>
     </div>
     ${salesSummary(prof)}${saveBar()}`;
@@ -286,7 +294,7 @@ function coversDailyForm(dates, byDate, prof) {
     const c = byDate[ymd(d)]?.covers;
     return `<div class="pj-day">
       <div class="pj-dlabel">${DOW[i]}<span>${d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}</span></div>
-      <div class="pj-money"><input type="number" min="0" step="1" class="pjCoverDay" data-i="${i}" value="${c != null && c !== '' ? Math.round(c) : ''}" placeholder="0"><span>covers</span></div>
+      <div class="pj-money"><input type="text" inputmode="numeric" class="pjCoverDay pj-comma" data-i="${i}" value="${c != null && c !== '' ? fmtComma(Math.round(c)) : ''}" placeholder="0"><span>covers</span></div>
       <div class="pj-drev" data-rev="${i}">—</div></div>`;
   }).join('');
   return `
@@ -307,6 +315,7 @@ function saveBar() {
 }
 
 function wireSales(el, method, dates, prof, goals) {
+  attachCommaInputs(el);
   const mix = prof.food_mix_pct, avg = prof.avg_check, lbw = tracksLbw(prof);
   function setSummary(rev, food, lbwv) {
     el.querySelector('#pjSumRev').textContent = money(rev);
@@ -340,7 +349,7 @@ function wireSales(el, method, dates, prof, goals) {
     }
     setSummary(rev, rev * mix, rev * (1 - mix));
   }
-  el.querySelectorAll('input[type=number]').forEach((i) => i.addEventListener('input', compute));
+  el.querySelectorAll('#pjFoodW, #pjLbwW, #pjCoversW, .pjCoverDay').forEach((i) => i.addEventListener('input', compute));
   compute();
   el.querySelector('#pjSaveSales').addEventListener('click', () => saveSales(el, method, dates, prof));
 }
@@ -510,7 +519,7 @@ function logForm(cats) {
       <select id="lfCat" class="pj-lin">${opts}</select>
       <input type="text" id="lfVendor" class="pj-lin" placeholder="Vendor" style="flex:1;min-width:120px">
       <input type="text" id="lfInv" class="pj-lin" placeholder="Invoice #" style="width:110px">
-      <div class="pj-money"><span>$</span><input type="number" id="lfAmt" min="0" step="0.01" placeholder="0.00" style="width:90px"></div>
+      <div class="pj-money"><span>$</span><input type="text" inputmode="decimal" class="pj-comma" id="lfAmt" placeholder="0.00" style="width:90px"></div>
     </div>
     <div class="pj-lf-actions">
       <button class="pj-snap" id="lfSnap">📷 Snap a receipt</button>
@@ -525,6 +534,7 @@ function logForm(cats) {
 }
 
 function wireLog(el, cats) {
+  attachCommaInputs(el);
   el.querySelector('#lfSnap').addEventListener('click', () => el.querySelector('#lfPhoto').click());
   el.querySelector('#lfPhoto').addEventListener('change', () => handleSnap(el));
   el.querySelector('#lfSave').addEventListener('click', () => saveEntry(el, cats));
@@ -550,7 +560,7 @@ function startEdit(el, row) {
   el.querySelector('#lfCat').value = row.category;
   el.querySelector('#lfVendor').value = row.vendor || '';
   el.querySelector('#lfInv').value = row.invoice_number || '';
-  el.querySelector('#lfAmt').value = row.amount;
+  el.querySelector('#lfAmt').value = fmtComma(num(row.amount));
   el.querySelector('#lfSave').textContent = 'Update entry';
   el.querySelector('#lfCancel').style.display = '';
   store.pendingImage = null;
@@ -640,36 +650,41 @@ function openLightbox(url) {
   document.body.appendChild(ov);
 }
 
-async function renderBudgetPanel(el, monthFoodSpent, monthRows) {
+async function renderBudgetPanel(el, monthRows) {
   const box = el.querySelector('#pjLogBudget');
   if (!box) return;
-  const gFood = goalsForMonth(firstOfMonthISO(store.month)).food;
-  if (gFood == null) { box.innerHTML = ''; return; }
+  const tracked = (store.profile && store.profile.categories) || ['food', 'lbw', 'supplies'];
+  const goals = goalsForMonth(firstOfMonthISO(store.month));
+  const order = ['food', 'lbw', 'supplies'].filter((cat) => tracked.includes(cat) && goals[cat] != null);
+  if (!order.length) { box.innerHTML = ''; return; }
 
   const mStart = store.month, mEnd = lastOfMonthDate(store.month);
   const wStart = mondayOf(new Date()), wEnd = addDays(wStart, 6);
   const today = new Date();
   const isCurrentMonth = store.month.getFullYear() === today.getFullYear() && store.month.getMonth() === today.getMonth();
 
-  let monthProjFood = 0, weekProjFood = 0;
+  let mFood = 0, mLbw = 0, wFood = 0, wLbw = 0;
   try {
-    const rm = await sb.from('projection_sales').select('food_revenue')
+    const rm = await sb.from('projection_sales').select('food_revenue,lbw_revenue')
       .eq('client_id', ctx.clientId).gte('sales_date', ymd(mStart)).lte('sales_date', ymd(mEnd));
-    (rm.data || []).forEach((r) => { monthProjFood += num(r.food_revenue); });
+    (rm.data || []).forEach((r) => { mFood += num(r.food_revenue); mLbw += num(r.lbw_revenue); });
     if (isCurrentMonth) {
-      const rw = await sb.from('projection_sales').select('food_revenue')
+      const rw = await sb.from('projection_sales').select('food_revenue,lbw_revenue')
         .eq('client_id', ctx.clientId).gte('sales_date', ymd(wStart)).lte('sales_date', ymd(wEnd));
-      (rw.data || []).forEach((r) => { weekProjFood += num(r.food_revenue); });
+      (rw.data || []).forEach((r) => { wFood += num(r.food_revenue); wLbw += num(r.lbw_revenue); });
     }
   } catch (e) { box.innerHTML = ''; return; }
 
-  const monthBudget = monthProjFood * gFood;
-  const weekBudget = weekProjFood * gFood;
-  let weekSpent = 0;
-  if (isCurrentMonth) {
-    const ws = ymd(wStart), we = ymd(wEnd);
-    monthRows.forEach((r) => { if (r.category === 'food' && r.receiving_date >= ws && r.receiving_date <= we) weekSpent += num(r.amount); });
-  }
+  const ws = ymd(wStart), we = ymd(wEnd);
+  const monthSpent = { food: 0, lbw: 0, supplies: 0 }, weekSpent = { food: 0, lbw: 0, supplies: 0 };
+  monthRows.forEach((r) => {
+    if (monthSpent[r.category] != null) monthSpent[r.category] += num(r.amount);
+    if (isCurrentMonth && r.receiving_date >= ws && r.receiving_date <= we && weekSpent[r.category] != null) weekSpent[r.category] += num(r.amount);
+  });
+
+  // supplies budgets off TOTAL sales (food + LBW); food/LBW off their own revenue
+  const baseMonth = { food: mFood, lbw: mLbw, supplies: mFood + mLbw };
+  const baseWeek = { food: wFood, lbw: wLbw, supplies: wFood + wLbw };
 
   const row = (label, budget, spent) => {
     const left = budget - spent, over = left < -0.005;
@@ -684,12 +699,18 @@ async function renderBudgetPanel(el, monthFoodSpent, monthRows) {
       </div>
     </div>`;
   };
+  const fmtPct = (g) => (g * 100).toFixed(1).replace(/\.0$/, '');
 
-  box.innerHTML = `<div class="pj-budgets">
-    <div class="pj-budgets-h">Food budget <span>${Math.round(gFood * 100)}% of sales</span></div>
-    ${isCurrentMonth ? row('This week', weekBudget, weekSpent) : ''}
-    ${row(isCurrentMonth ? 'Month to date' : monthName(store.month), monthBudget, monthFoodSpent)}
-  </div>`;
+  box.innerHTML = order.map((cat) => {
+    const g = goals[cat];
+    const label = (CATS.find((cc) => cc.key === cat) || {}).label || cat;
+    const mB = baseMonth[cat] * g, wB = baseWeek[cat] * g;
+    return `<div class="pj-budgets">
+      <div class="pj-budgets-h">${label} budget <span>${fmtPct(g)}% of sales</span></div>
+      ${isCurrentMonth ? row('This week', wB, weekSpent[cat]) : ''}
+      ${row(isCurrentMonth ? 'Month to date' : monthName(store.month), mB, monthSpent[cat])}
+    </div>`;
+  }).join('');
 }
 
 async function loadEntries(el, cats) {
@@ -713,12 +734,8 @@ async function loadEntries(el, cats) {
   let total = 0;
   rows.forEach((r) => { if (sum[r.category] != null) sum[r.category] += num(r.amount); total += num(r.amount); });
 
-  await renderBudgetPanel(el, sum.food || 0, rows);
-
-  const otherCats = CATS.filter((c) => cats.includes(c.key) && c.key !== 'food');
-  totals.innerHTML = otherCats.length ? `<div class="pj-totals">
-    ${otherCats.map((c) => `<div class="pj-tcard"><span>${c.label} logged</span><b>${money(sum[c.key])}</b></div>`).join('')}
-    <div class="pj-tcard total"><span>Total logged</span><b>${money(total)}</b></div></div>` : '';
+  await renderBudgetPanel(el, rows);
+  totals.innerHTML = '';
 
   if (!rows.length) {
     list.innerHTML = `<div class="pj-lempty">No entries yet for ${monthName(store.month)}. Add your first above — or snap a receipt.</div>`;
