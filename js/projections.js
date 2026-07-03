@@ -153,11 +153,13 @@ async function renderSales(el) {
       <div class="pj-wlabel"><span class="pj-wrel ${tone}">${rel}</span><span class="pj-wrange">${weekdayRange(store.week)}</span></div>
       <button class="pj-wbtn" id="pjNext">›</button>
       <button class="pj-today" id="pjThis">This week</button>
+      <button class="pj-qbtn" id="pjPullQbo" title="Project this week from QuickBooks history">↺ Pull from QuickBooks</button>
     </div>
     <div id="pjSalesBody"><div class="pj-loading">Loading week…</div></div>`;
   el.querySelector('#pjPrev').addEventListener('click', () => { store.week = addDays(store.week, -7); renderSales(el); });
   el.querySelector('#pjNext').addEventListener('click', () => { store.week = addDays(store.week, 7); renderSales(el); });
   el.querySelector('#pjThis').addEventListener('click', () => { store.week = mondayOf(new Date()); renderSales(el); });
+  el.querySelector('#pjPullQbo').addEventListener('click', () => pullFromQbo(el));
 
   if (needsBits) {
     el.querySelector('#pjSalesBody').innerHTML = `<div class="pj-notice">This method needs an <b>average check</b> and a <b>food/LBW split</b>.
@@ -341,6 +343,106 @@ function wireSales(el, method, dates, prof, goals) {
   el.querySelectorAll('input[type=number]').forEach((i) => i.addEventListener('input', compute));
   compute();
   el.querySelector('#pjSaveSales').addEventListener('click', () => saveSales(el, method, dates, prof));
+}
+
+function factorLabel(x) {
+  if (x == null) return 'n/a';
+  const pct = (x - 1) * 100;
+  return (pct >= 0 ? '+' : '−') + Math.abs(pct).toFixed(1) + '%';
+}
+
+async function pullFromQbo(el) {
+  const body = el.querySelector('#pjSalesBody');
+  if (!body) return;
+  body.innerHTML = `<div class="pj-loading">Pulling last year's week and the last two weeks from QuickBooks…</div>`;
+  try {
+    const { data, error } = await sb.functions.invoke('qbo-project', { body: { client_id: ctx.clientId, week_start: ymd(store.week) } });
+    if (error) throw new Error(error.message || 'request failed');
+    if (data && data.error === 'not_connected') { pullNotice(el, "QuickBooks isn't connected for this client. Connect it under Month-end review first."); return; }
+    if (data && data.error === 'reauth_needed') { pullNotice(el, 'QuickBooks needs to be reconnected — do it under Month-end review, then try again.'); return; }
+    if (!data || !data.ok) throw new Error((data && (data.message || data.error)) || 'no result');
+    renderQboReview(el, data);
+  } catch (e) {
+    body.innerHTML = `<div class="pj-err">Couldn't pull from QuickBooks: ${esc(e.message)}</div>`;
+    const b = document.createElement('button'); b.className = 'pj-ghost'; b.textContent = 'Back'; b.style.marginTop = '12px';
+    b.addEventListener('click', () => renderSales(el)); body.appendChild(b);
+  }
+}
+
+function pullNotice(el, msg) {
+  const body = el.querySelector('#pjSalesBody');
+  body.innerHTML = `<div class="pj-notice">${esc(msg)}</div>`;
+  const b = document.createElement('button'); b.className = 'pj-ghost'; b.textContent = 'Back'; b.style.marginTop = '12px';
+  b.addEventListener('click', () => renderSales(el)); body.appendChild(b);
+}
+
+function renderQboReview(el, data) {
+  const body = el.querySelector('#pjSalesBody');
+  const prof = store.profile;
+  const lbw = tracksLbw(prof);
+  const days = data.days || [];
+  const weekFood = days.reduce((s, d) => s + num(d.food), 0);
+  const weekLbw = days.reduce((s, d) => s + num(d.lbw), 0);
+
+  if (!data.hasHistory) {
+    body.innerHTML = `<div class="pj-notice">Not enough QuickBooks history to project this week — this needs last year's daily sales for the same week. Enter the week manually instead.</div>`;
+    const b = document.createElement('button'); b.className = 'pj-ghost'; b.textContent = 'Back'; b.style.marginTop = '12px';
+    b.addEventListener('click', () => renderSales(el)); body.appendChild(b);
+    return;
+  }
+
+  const f = data.factors || {};
+  const dayRows = days.map((d, i) => `
+    <div class="pj-qrow">
+      <div class="pj-qd">${DOW[i]}<span>${new Date(d.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}</span></div>
+      <div class="pj-qv"><b>${money(d.food)}</b><span>food</span></div>
+      ${lbw ? `<div class="pj-qv"><b>${money(d.lbw)}</b><span>lbw</span></div>` : ''}
+    </div>`).join('');
+
+  body.innerHTML = `
+    <div class="pj-qbo">
+      <div class="pj-qhead">Projected from QuickBooks<span>Same week last year, adjusted by the 2-week trend</span></div>
+      <div class="pj-qfactors">
+        <span class="pj-qchip">Food ${factorLabel(f.food)}</span>
+        ${lbw ? `<span class="pj-qchip">LBW ${factorLabel(f.lbw)}</span>` : ''}
+        <em>vs. the same two weeks last year</em>
+      </div>
+      <div class="pj-qdays">${dayRows}</div>
+      <div class="pj-sum">
+        <div><span>Week food</span><b>${money(weekFood)}</b></div>
+        ${lbw ? `<div><span>Week LBW</span><b>${money(weekLbw)}</b></div>` : ''}
+        <div><span>Week total</span><b>${money(weekFood + weekLbw)}</b></div>
+      </div>
+      <div class="pj-save">
+        <button class="pj-btn" id="pjQSave">Save projection</button>
+        <button class="pj-ghost" id="pjQCancel">Cancel</button>
+        <span class="pj-note" id="pjQMsg"></span>
+      </div>
+      <div class="pj-acc">Food from: ${(data.foodAccounts || []).map((a) => esc(a)).join(' · ') || '—'}${lbw ? `<br>LBW from: ${(data.lbwAccounts || []).map((a) => esc(a)).join(' · ') || '—'}` : ''}</div>
+    </div>`;
+  body.querySelector('#pjQCancel').addEventListener('click', () => renderSales(el));
+  body.querySelector('#pjQSave').addEventListener('click', () => saveQboProjection(el, days));
+}
+
+async function saveQboProjection(el, days) {
+  const btn = el.querySelector('#pjQSave'), msg = el.querySelector('#pjQMsg');
+  const setMsg = (t, bad) => { if (msg) { msg.textContent = t; msg.style.color = bad ? 'var(--red)' : 'var(--green)'; } };
+  const lbw = tracksLbw(store.profile);
+  const out = days.map((d) => ({
+    client_id: ctx.clientId, sales_date: d.date, covers: null,
+    food_revenue: num(d.food), lbw_revenue: lbw ? num(d.lbw) : 0,
+    source_method: 'qbo', entered_by: ctx.userId, entered_at: new Date().toISOString(),
+  }));
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Saving…'; setMsg('', false);
+  try {
+    const r = await sb.from('projection_sales').upsert(out, { onConflict: 'client_id,sales_date' });
+    if (r.error) throw r.error;
+    setMsg('Saved.', false);
+    setTimeout(() => renderSales(el), 500);
+  } catch (e) {
+    setMsg('Error: ' + e.message, true);
+    btn.disabled = false; btn.textContent = orig;
+  }
 }
 
 async function saveSales(el, method, dates, prof) {
@@ -887,6 +989,22 @@ function pjStyles() {
     #tab-projections .pj-wlabel .pj-wrel.past{background:var(--warm);color:var(--text3)}
     #tab-projections .pj-wlabel .pj-wrange{font-family:var(--font-display);font-weight:800;font-size:17px;color:var(--text);text-transform:none;letter-spacing:-.01em}
     #tab-projections .pj-today{margin-left:6px;border:1px solid var(--border);background:var(--bg);border-radius:999px;padding:6px 13px;font-size:12px;font-weight:600;color:var(--text2);cursor:pointer}
+    #tab-projections .pj-qbtn{margin-left:auto;border:1px solid var(--navy);background:var(--navy);color:#fff;border-radius:999px;padding:7px 15px;font-family:var(--font-display);font-weight:700;font-size:12.5px;cursor:pointer}
+    #tab-projections .pj-qbtn:hover{opacity:.92}
+    #tab-projections .pj-qhead{font-family:var(--font-display);font-weight:800;font-size:16px;color:var(--text);margin-bottom:10px}
+    #tab-projections .pj-qhead span{display:block;font-family:var(--font-body);font-weight:500;font-size:12.5px;color:var(--text3);margin-top:2px}
+    #tab-projections .pj-qfactors{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+    #tab-projections .pj-qchip{font-family:var(--font-display);font-weight:800;font-size:13px;color:var(--navy);background:var(--warm);border:1px solid var(--border);border-radius:999px;padding:5px 12px}
+    #tab-projections .pj-qfactors em{font-style:normal;font-size:12px;color:var(--text3);font-weight:500}
+    #tab-projections .pj-qdays{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-bottom:8px}
+    #tab-projections .pj-qrow{border:1px solid var(--border);border-radius:var(--r);padding:9px 6px;text-align:center}
+    #tab-projections .pj-qd{font-family:var(--font-display);font-weight:700;font-size:12px;color:var(--text);display:flex;flex-direction:column}
+    #tab-projections .pj-qd span{font-weight:500;font-size:10px;color:var(--text3)}
+    #tab-projections .pj-qv{margin-top:6px}
+    #tab-projections .pj-qv b{font-family:var(--font-display);font-weight:800;font-size:13px;color:var(--navy);display:block}
+    #tab-projections .pj-qv span{font-size:9.5px;color:var(--text3);text-transform:uppercase;letter-spacing:.03em}
+    #tab-projections .pj-acc{margin-top:12px;font-size:11px;color:var(--text3);line-height:1.6}
+    @media (max-width:640px){#tab-projections .pj-qdays{grid-template-columns:repeat(2,1fr)}#tab-projections .pj-qbtn{margin-left:0;width:100%}}
     #tab-projections .pj-context{font-size:12.5px;color:var(--text3);font-weight:600}
     #tab-projections .pj-bigrow{display:flex;gap:22px;align-items:flex-end;flex-wrap:wrap;margin-bottom:6px}
     #tab-projections .pj-bigin label{display:block;font-family:var(--font-display);font-weight:700;font-size:12.5px;color:var(--text2);margin-bottom:6px}
