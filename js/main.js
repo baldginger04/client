@@ -358,7 +358,7 @@ const TAB_TITLES = {
   kpi:         { title: 'KPI Dashboard',              sub: 'Trailing 13 months from your P&L data' },
   'pnl-summary': { title: 'Prime Sheet',              sub: 'Current month vs prior month and same month last year' },
   documents:   { title: 'Documents',                  sub: 'W-9s, voided checks, tax documents, and other long-lived records' },
-  projections: { title: 'Projections',                sub: 'Forward-looking forecasts' },
+  projections: { title: 'Projections & Receiving Log', sub: 'Forecasts, receiving log, and month-end review' },
   messages:    { title: 'Client Questions',          sub: 'Questions and answers with the Bald Ginger team' },
 };
 
