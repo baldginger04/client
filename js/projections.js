@@ -387,6 +387,7 @@ async function renderLog(el) {
       <button class="pj-wbtn" id="pjMNext">›</button>
       <button class="pj-today" id="pjMThis">This month</button>
     </div>
+    <div id="pjLogBudget"></div>
     <div id="pjLogTotals"></div>
     ${logForm(cats)}
     <div id="pjLogList"><div class="pj-loading">Loading…</div></div>`;
@@ -537,6 +538,58 @@ function openLightbox(url) {
   document.body.appendChild(ov);
 }
 
+async function renderBudgetPanel(el, monthFoodSpent, monthRows) {
+  const box = el.querySelector('#pjLogBudget');
+  if (!box) return;
+  const gFood = goalsForMonth(firstOfMonthISO(store.month)).food;
+  if (gFood == null) { box.innerHTML = ''; return; }
+
+  const mStart = store.month, mEnd = lastOfMonthDate(store.month);
+  const wStart = mondayOf(new Date()), wEnd = addDays(wStart, 6);
+  const today = new Date();
+  const isCurrentMonth = store.month.getFullYear() === today.getFullYear() && store.month.getMonth() === today.getMonth();
+
+  let monthProjFood = 0, weekProjFood = 0;
+  try {
+    const rm = await sb.from('projection_sales').select('food_revenue')
+      .eq('client_id', ctx.clientId).gte('sales_date', ymd(mStart)).lte('sales_date', ymd(mEnd));
+    (rm.data || []).forEach((r) => { monthProjFood += num(r.food_revenue); });
+    if (isCurrentMonth) {
+      const rw = await sb.from('projection_sales').select('food_revenue')
+        .eq('client_id', ctx.clientId).gte('sales_date', ymd(wStart)).lte('sales_date', ymd(wEnd));
+      (rw.data || []).forEach((r) => { weekProjFood += num(r.food_revenue); });
+    }
+  } catch (e) { box.innerHTML = ''; return; }
+
+  const monthBudget = monthProjFood * gFood;
+  const weekBudget = weekProjFood * gFood;
+  let weekSpent = 0;
+  if (isCurrentMonth) {
+    const ws = ymd(wStart), we = ymd(wEnd);
+    monthRows.forEach((r) => { if (r.category === 'food' && r.receiving_date >= ws && r.receiving_date <= we) weekSpent += num(r.amount); });
+  }
+
+  const row = (label, budget, spent) => {
+    const left = budget - spent, over = left < -0.005;
+    const pct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
+    return `<div class="pj-brow">
+      <div class="pj-blabel">${label}</div>
+      <div class="pj-bbar"><div class="pj-bfill ${over ? 'over' : ''}" style="width:${pct}%"></div></div>
+      <div class="pj-bfigs">
+        <div class="pj-bfig"><span>Budget</span><b>${money(budget)}</b></div>
+        <div class="pj-bfig"><span>Spent</span><b>${money(spent)}</b></div>
+        <div class="pj-bfig"><span>${over ? 'Over' : 'Left'}</span><b class="${over ? 'bad' : 'good'}">${money(Math.abs(left))}</b></div>
+      </div>
+    </div>`;
+  };
+
+  box.innerHTML = `<div class="pj-budgets">
+    <div class="pj-budgets-h">Food budget <span>${Math.round(gFood * 100)}% of sales</span></div>
+    ${isCurrentMonth ? row('This week', weekBudget, weekSpent) : ''}
+    ${row(isCurrentMonth ? 'Month to date' : monthName(store.month), monthBudget, monthFoodSpent)}
+  </div>`;
+}
+
 async function loadEntries(el, cats) {
   const list = el.querySelector('#pjLogList');
   const totals = el.querySelector('#pjLogTotals');
@@ -557,9 +610,13 @@ async function loadEntries(el, cats) {
   const sum = {}; cats.forEach((c) => { sum[c] = 0; });
   let total = 0;
   rows.forEach((r) => { if (sum[r.category] != null) sum[r.category] += num(r.amount); total += num(r.amount); });
-  totals.innerHTML = `<div class="pj-totals">
-    ${CATS.filter((c) => cats.includes(c.key)).map((c) => `<div class="pj-tcard"><span>${c.label}</span><b>${money(sum[c.key])}</b></div>`).join('')}
-    <div class="pj-tcard total"><span>Total logged</span><b>${money(total)}</b></div></div>`;
+
+  await renderBudgetPanel(el, sum.food || 0, rows);
+
+  const otherCats = CATS.filter((c) => cats.includes(c.key) && c.key !== 'food');
+  totals.innerHTML = otherCats.length ? `<div class="pj-totals">
+    ${otherCats.map((c) => `<div class="pj-tcard"><span>${c.label} logged</span><b>${money(sum[c.key])}</b></div>`).join('')}
+    <div class="pj-tcard total"><span>Total logged</span><b>${money(total)}</b></div></div>` : '';
 
   if (!rows.length) {
     list.innerHTML = `<div class="pj-lempty">No entries yet for ${monthName(store.month)}. Add your first above — or snap a receipt.</div>`;
@@ -631,6 +688,16 @@ async function deleteEntry(el, row, cats) {
 /* ===================================================================
    SETUP (profile + effective-dated goals)
    =================================================================== */
+function goalsForMonth(monthISO) {
+  const out = {};
+  for (const cat of CATS.map((c) => c.key)) {
+    const rows = (store.goals || []).filter((g) => g.category === cat && g.effective_from <= monthISO)
+      .sort((a, b) => (a.effective_from < b.effective_from ? 1 : -1));
+    if (rows.length) out[cat] = rows[0].goal_pct;
+  }
+  return out;
+}
+
 function currentGoals() {
   const month = firstOfMonthISO();
   const out = {};
@@ -848,6 +915,22 @@ function pjStyles() {
     #tab-projections .pj-empty-emoji{font-size:34px;margin-bottom:12px}
     #tab-projections .pj-empty-t{font-family:var(--font-display);font-weight:700;font-size:17px;color:var(--text2)}
     #tab-projections .pj-empty-s{font-size:13px;margin-top:5px}
+    #tab-projections .pj-budgets{background:var(--bg);border:1px solid var(--border);border-radius:var(--r-lg);padding:16px 18px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
+    #tab-projections .pj-budgets-h{font-family:var(--font-display);font-weight:800;font-size:14px;color:var(--text);margin-bottom:12px}
+    #tab-projections .pj-budgets-h span{font-family:var(--font-body);font-weight:600;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.03em;margin-left:6px}
+    #tab-projections .pj-brow{display:flex;align-items:center;gap:16px;padding:10px 0;border-top:1px solid var(--border);flex-wrap:wrap}
+    #tab-projections .pj-brow:first-of-type{border-top:0}
+    #tab-projections .pj-blabel{font-family:var(--font-display);font-weight:700;font-size:13px;color:var(--text2);width:104px;flex:none}
+    #tab-projections .pj-bbar{flex:1;min-width:120px;height:8px;background:var(--warm);border:1px solid var(--border);border-radius:999px;overflow:hidden}
+    #tab-projections .pj-bfill{height:100%;background:var(--green);border-radius:999px;transition:width .3s}
+    #tab-projections .pj-bfill.over{background:var(--red)}
+    #tab-projections .pj-bfigs{display:flex;gap:22px;flex:none}
+    #tab-projections .pj-bfig{display:flex;flex-direction:column;gap:1px;min-width:64px}
+    #tab-projections .pj-bfig span{font-size:10px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+    #tab-projections .pj-bfig b{font-family:var(--font-display);font-weight:800;font-size:16px;color:var(--navy)}
+    #tab-projections .pj-bfig b.good{color:var(--green)}
+    #tab-projections .pj-bfig b.bad{color:var(--red)}
+    @media (max-width:640px){#tab-projections .pj-blabel{width:100%}#tab-projections .pj-bfigs{gap:16px}}
     #tab-projections .pj-totals{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
     #tab-projections .pj-tcard{flex:1;min-width:120px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px;display:flex;flex-direction:column;gap:4px}
     #tab-projections .pj-tcard span{font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
