@@ -52,6 +52,7 @@ export async function mountFinancials({ clientId, isTeam, userId, fullName }) {
     sb.storage.from(BUCKET).list(clientId, { limit: 1 }).catch(() => {});
   }
   await loadAndRenderFiles();
+  renderBalanceSheetSection();
 }
 
 /** Called when the user leaves this tab — tear down any commenting UI. */
@@ -1438,4 +1439,128 @@ async function saveParseSession() {
 function formatMoney(n) {
   if (n === 0) return '—';
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+
+
+// =====================================================================
+// BALANCE SHEET (render-only) — team pulls from QuickBooks and publishes a
+// snapshot; the client views the published snapshot. No structured storage.
+// =====================================================================
+let bsMonth = null;
+function bsFirstOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
+function bsAddMonths(d, k) { return new Date(d.getFullYear(), d.getMonth() + k, 1); }
+function bsKey(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); }
+function bsMonthName(d) { return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }); }
+function bsLastDay(d) { const e = new Date(d.getFullYear(), d.getMonth() + 1, 0); return e.getFullYear() + '-' + String(e.getMonth() + 1).padStart(2, '0') + '-' + String(e.getDate()).padStart(2, '0'); }
+function bsEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])); }
+function bsFmt(n) { return n == null ? '' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 }); }
+
+function renderBalanceSheetSection() {
+  const pane = document.getElementById('tab-financials');
+  if (!pane) return;
+  if (!bsMonth) bsMonth = bsAddMonths(bsFirstOfMonth(new Date()), -1); // default: last closed month
+  let sec = document.getElementById('bsSection');
+  if (!sec) {
+    sec = document.createElement('section');
+    sec.className = 'card';
+    sec.id = 'bsSection';
+    sec.style.cssText = 'margin-top:18px';
+    pane.appendChild(sec);
+  }
+  drawBsSection(sec);
+}
+
+function drawBsSection(sec) {
+  const team = state.isTeam;
+  sec.innerHTML =
+    '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">'
+    + '<div style="font-weight:800;font-size:16px;color:var(--text)">Balance Sheet</div>'
+    + '<div style="display:flex;align-items:center;gap:6px;margin-left:6px">'
+    + '<button type="button" id="bsPrev" style="width:30px;height:30px;border:1px solid var(--border);background:var(--bg);border-radius:7px;cursor:pointer">\u2039</button>'
+    + '<span id="bsLabel" style="font-weight:700;min-width:130px;text-align:center">' + bsMonthName(bsMonth) + '</span>'
+    + '<button type="button" id="bsNext" style="width:30px;height:30px;border:1px solid var(--border);background:var(--bg);border-radius:7px;cursor:pointer">\u203a</button>'
+    + '</div>'
+    + (team ? '<button type="button" id="bsPull" style="margin-left:auto;border:1px solid #1B2A4B;background:#1B2A4B;color:#fff;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer">\u21ba Pull from QuickBooks</button>' : '')
+    + '</div>'
+    + '<div id="bsBody"><div style="color:var(--text3);font-size:13px;padding:6px 0">Loading\u2026</div></div>';
+  sec.querySelector('#bsPrev').addEventListener('click', () => { bsMonth = bsAddMonths(bsMonth, -1); drawBsSection(sec); });
+  sec.querySelector('#bsNext').addEventListener('click', () => { bsMonth = bsAddMonths(bsMonth, 1); drawBsSection(sec); });
+  if (team) sec.querySelector('#bsPull').addEventListener('click', () => pullBs(sec));
+  loadPublishedBs(sec);
+}
+
+async function loadPublishedBs(sec) {
+  const body = sec.querySelector('#bsBody');
+  if (!body) return;
+  try {
+    const r = await sb.from('bs_reports').select('rows,as_of,generated_at')
+      .eq('client_id', state.clientId).eq('period', bsKey(bsMonth)).eq('published', true).maybeSingle();
+    if (r.error) throw r.error;
+    if (!r.data) {
+      body.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:10px 0">'
+        + (state.isTeam ? 'Nothing published for ' + bsMonthName(bsMonth) + ' yet. Pull it from QuickBooks above, then publish.'
+                        : 'No balance sheet has been posted for ' + bsMonthName(bsMonth) + ' yet.') + '</div>';
+      return;
+    }
+    body.innerHTML = renderBsRows(r.data.rows || [])
+      + '<div style="font-size:11px;color:var(--text3);margin-top:8px">Published ' + (r.data.generated_at ? new Date(r.data.generated_at).toLocaleDateString() : '') + '</div>';
+  } catch (e) {
+    body.innerHTML = '<div style="color:#b93232;font-size:13px">Couldn\u2019t load: ' + bsEsc(e.message || e) + '</div>';
+  }
+}
+
+async function pullBs(sec) {
+  const btn = sec.querySelector('#bsPull');
+  const body = sec.querySelector('#bsBody');
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Pulling\u2026'; }
+  body.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:6px 0">Pulling the balance sheet from QuickBooks\u2026</div>';
+  try {
+    const { data, error } = await sb.functions.invoke('qbo-bs', { body: { client_id: state.clientId, as_of: bsLastDay(bsMonth) } });
+    if (error) throw new Error(error.message || 'request failed');
+    if (data && data.error === 'not_connected') { body.innerHTML = '<div style="color:#b93232;font-size:13px">QuickBooks isn\u2019t connected for this client.</div>'; return; }
+    if (data && data.error === 'reauth_needed') { body.innerHTML = '<div style="color:#b93232;font-size:13px">QuickBooks needs to be reconnected.</div>'; return; }
+    if (!data || !data.ok) throw new Error((data && (data.message || data.error)) || 'no result');
+    const rows = data.rows || [];
+    body.innerHTML = renderBsRows(rows)
+      + '<div style="display:flex;gap:12px;align-items:center;margin-top:14px">'
+      + '<button type="button" id="bsPublish" style="border:0;background:#D85B31;color:#fff;border-radius:8px;padding:9px 16px;font-weight:700;cursor:pointer">Publish for client</button>'
+      + '<span id="bsPubMsg" style="font-size:12.5px;color:var(--text3)">Preview \u2014 not visible to the client until published.</span></div>';
+    sec.querySelector('#bsPublish').addEventListener('click', () => publishBs(sec, rows, data.as_of));
+  } catch (e) {
+    body.innerHTML = '<div style="color:#b93232;font-size:13px">Couldn\u2019t pull: ' + bsEsc(e.message || e) + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+  }
+}
+
+async function publishBs(sec, rows, asOf) {
+  const btn = sec.querySelector('#bsPublish');
+  const msg = sec.querySelector('#bsPubMsg');
+  if (btn) { btn.disabled = true; btn.textContent = 'Publishing\u2026'; }
+  try {
+    const { error } = await sb.from('bs_reports').upsert({
+      client_id: state.clientId, period: bsKey(bsMonth), as_of: asOf,
+      rows, generated_by: state.userId, generated_at: new Date().toISOString(), published: true,
+    }, { onConflict: 'client_id,period' });
+    if (error) throw error;
+    if (msg) { msg.textContent = 'Published \u2014 the client can now see it.'; msg.style.color = '#1e7a45'; }
+    if (btn) btn.textContent = 'Published \u2713';
+  } catch (e) {
+    if (msg) { msg.textContent = 'Error: ' + (e.message || e); msg.style.color = '#b93232'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Publish for client'; }
+  }
+}
+
+function renderBsRows(rows) {
+  const body = (rows || []).map((r) => {
+    const pad = 10 + (r.indent || 0) * 16;
+    const bold = r.kind !== 'account';
+    const border = r.kind === 'total' ? 'border-top:1px solid var(--border)' : '';
+    const color = r.kind === 'header' ? 'var(--navy)' : 'var(--text)';
+    return '<tr style="' + border + '">'
+      + '<td style="padding:5px 10px 5px ' + pad + 'px;' + (bold ? 'font-weight:700;' : '') + 'color:' + color + '">' + bsEsc(r.label) + '</td>'
+      + '<td style="padding:5px 10px;text-align:right;' + (bold ? 'font-weight:700' : '') + '">' + bsFmt(r.amount) + '</td></tr>';
+  }).join('');
+  return '<table style="width:100%;border-collapse:collapse;font-size:13px;max-width:560px">' + body + '</table>';
 }
