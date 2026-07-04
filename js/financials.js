@@ -53,6 +53,7 @@ export async function mountFinancials({ clientId, isTeam, userId, fullName }) {
   }
   await loadAndRenderFiles();
   renderBalanceSheetSection();
+  renderPnlDetailSection();
 }
 
 /** Called when the user leaves this tab — tear down any commenting UI. */
@@ -1563,4 +1564,226 @@ function renderBsRows(rows) {
       + '<td style="padding:5px 10px;text-align:right;' + (bold ? 'font-weight:700' : '') + '">' + bsFmt(r.amount) + '</td></tr>';
   }).join('');
   return '<table style="width:100%;border-collapse:collapse;font-size:13px;max-width:560px">' + body + '</table>';
+}
+
+
+// =====================================================================
+// P&L DETAIL — team pulls transaction detail from QuickBooks and publishes it;
+// client reviews, drills into each account line, and can leave a note on a
+// line that the team responds to (a thread per account line).
+// =====================================================================
+let pdMonth = null;
+function pdKey(acct) { return acct.account_number || acct.account_name || ''; }
+
+function renderPnlDetailSection() {
+  const pane = document.getElementById('tab-financials');
+  if (!pane) return;
+  if (!pdMonth) pdMonth = bsAddMonths(bsFirstOfMonth(new Date()), -1);
+  let sec = document.getElementById('pdSection');
+  if (!sec) {
+    sec = document.createElement('section');
+    sec.className = 'card'; sec.id = 'pdSection'; sec.style.cssText = 'margin-top:18px';
+    pane.appendChild(sec);
+  }
+  drawPdSection(sec);
+}
+
+function drawPdSection(sec) {
+  const team = state.isTeam;
+  sec.innerHTML =
+    '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">'
+    + '<div style="font-weight:800;font-size:16px;color:var(--text)">P&L Detail</div>'
+    + '<div style="display:flex;align-items:center;gap:6px;margin-left:6px">'
+    + '<button type="button" id="pdPrev" style="width:30px;height:30px;border:1px solid var(--border);background:var(--bg);border-radius:7px;cursor:pointer">\u2039</button>'
+    + '<span style="font-weight:700;min-width:130px;text-align:center">' + bsMonthName(pdMonth) + '</span>'
+    + '<button type="button" id="pdNext" style="width:30px;height:30px;border:1px solid var(--border);background:var(--bg);border-radius:7px;cursor:pointer">\u203a</button>'
+    + '</div>'
+    + (team ? '<button type="button" id="pdPull" style="margin-left:auto;border:1px solid #1B2A4B;background:#1B2A4B;color:#fff;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer">\u21ba Pull from QuickBooks</button>' : '')
+    + '</div>'
+    + '<div id="pdBody"><div style="color:var(--text3);font-size:13px;padding:6px 0">Loading\u2026</div></div>';
+  sec.querySelector('#pdPrev').addEventListener('click', () => { pdMonth = bsAddMonths(pdMonth, -1); drawPdSection(sec); });
+  sec.querySelector('#pdNext').addEventListener('click', () => { pdMonth = bsAddMonths(pdMonth, 1); drawPdSection(sec); });
+  if (team) sec.querySelector('#pdPull').addEventListener('click', () => pullPd(sec));
+  loadPublishedPd(sec);
+}
+
+async function loadNotesByKey() {
+  const map = {};
+  try {
+    const r = await sb.from('pnl_detail_notes').select('*')
+      .eq('client_id', state.clientId).eq('period', bsKey(pdMonth)).order('created_at', { ascending: true });
+    (r.data || []).forEach((nt) => { (map[nt.account_key] = map[nt.account_key] || []).push(nt); });
+  } catch (e) { /* notes are non-fatal */ }
+  return map;
+}
+
+async function loadPublishedPd(sec) {
+  const body = sec.querySelector('#pdBody');
+  if (!body) return;
+  try {
+    const [rep, notes] = await Promise.all([
+      sb.from('pnl_detail_reports').select('accounts,generated_at').eq('client_id', state.clientId).eq('period', bsKey(pdMonth)).eq('published', true).maybeSingle(),
+      loadNotesByKey(),
+    ]);
+    if (rep.error) throw rep.error;
+    if (!rep.data) {
+      body.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:10px 0">'
+        + (state.isTeam ? 'Nothing published for ' + bsMonthName(pdMonth) + ' yet. Pull it from QuickBooks above, then publish.'
+                        : 'No P&L detail has been posted for ' + bsMonthName(pdMonth) + ' yet.') + '</div>';
+      return;
+    }
+    renderPdAccounts(sec, rep.data.accounts || [], notes, false);
+  } catch (e) {
+    body.innerHTML = '<div style="color:#b93232;font-size:13px">Couldn\u2019t load: ' + bsEsc(e.message || e) + '</div>';
+  }
+}
+
+async function pullPd(sec) {
+  const btn = sec.querySelector('#pdPull');
+  const body = sec.querySelector('#pdBody');
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Pulling\u2026'; }
+  body.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:6px 0">Pulling the P&L detail from QuickBooks\u2026</div>';
+  try {
+    const [y, mo] = bsKey(pdMonth).split('-').map(Number);
+    const from = bsKey(pdMonth) + '-01';
+    const to = bsLastDay(pdMonth);
+    const { data, error } = await sb.functions.invoke('qbo-pnl-detail', { body: { client_id: state.clientId, from, to } });
+    if (error) throw new Error(error.message || 'request failed');
+    if (data && data.error === 'not_connected') { body.innerHTML = '<div style="color:#b93232;font-size:13px">QuickBooks isn\u2019t connected for this client.</div>'; return; }
+    if (data && data.error === 'reauth_needed') { body.innerHTML = '<div style="color:#b93232;font-size:13px">QuickBooks needs to be reconnected.</div>'; return; }
+    if (!data || !data.ok) throw new Error((data && (data.message || data.error)) || 'no result');
+    const notes = await loadNotesByKey();
+    renderPdAccounts(sec, data.accounts || [], notes, true);
+  } catch (e) {
+    body.innerHTML = '<div style="color:#b93232;font-size:13px">Couldn\u2019t pull: ' + bsEsc(e.message || e) + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+  }
+}
+
+async function publishPd(sec, accounts) {
+  const btn = sec.querySelector('#pdPublish');
+  const msg = sec.querySelector('#pdPubMsg');
+  if (btn) { btn.disabled = true; btn.textContent = 'Publishing\u2026'; }
+  try {
+    const { error } = await sb.from('pnl_detail_reports').upsert({
+      client_id: state.clientId, period: bsKey(pdMonth), accounts,
+      generated_by: state.userId, generated_at: new Date().toISOString(), published: true,
+    }, { onConflict: 'client_id,period' });
+    if (error) throw error;
+    if (msg) { msg.textContent = 'Published \u2014 the client can now review it.'; msg.style.color = '#1e7a45'; }
+    if (btn) btn.textContent = 'Published \u2713';
+  } catch (e) {
+    if (msg) { msg.textContent = 'Error: ' + (e.message || e); msg.style.color = '#b93232'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Publish for client'; }
+  }
+}
+
+function renderPdAccounts(sec, accounts, notesByKey, isPreview) {
+  const body = sec.querySelector('#pdBody');
+  const rowsHtml = accounts.map((a, i) => {
+    const key = pdKey(a);
+    const notes = notesByKey[key] || [];
+    const openCount = notes.filter((nt) => !nt.resolved).length;
+    return '<div class="pd-acct" data-i="' + i + '" style="border:1px solid var(--border);border-radius:8px;margin-bottom:6px;overflow:hidden">'
+      + '<div class="pd-head" data-i="' + i + '" style="display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;background:var(--bg)">'
+      + '<span class="pd-caret" style="color:var(--text3);width:12px">\u25b8</span>'
+      + '<span style="flex:1;font-weight:600;font-size:13.5px">' + bsEsc(a.account_name) + '</span>'
+      + (notes.length ? '<span style="font-size:11.5px;color:' + (openCount ? '#b93232' : 'var(--text3)') + '">\ud83d\udcac ' + notes.length + '</span>' : '')
+      + '<span style="font-family:var(--font-display,inherit);font-weight:800;font-size:14px;color:var(--navy)">' + bsFmt(a.total) + '</span>'
+      + '</div>'
+      + '<div class="pd-body-x" data-i="' + i + '" hidden style="padding:0 12px 12px"></div>'
+      + '</div>';
+  }).join('');
+
+  const pubBar = isPreview
+    ? '<div style="display:flex;gap:12px;align-items:center;margin-top:14px"><button type="button" id="pdPublish" style="border:0;background:#D85B31;color:#fff;border-radius:8px;padding:9px 16px;font-weight:700;cursor:pointer">Publish for client</button><span id="pdPubMsg" style="font-size:12.5px;color:var(--text3)">Preview \u2014 not visible to the client until published.</span></div>'
+    : '';
+  body.innerHTML = (accounts.length ? rowsHtml : '<div style="color:var(--text3);font-size:13px">No detail rows.</div>') + pubBar;
+
+  if (isPreview) sec.querySelector('#pdPublish').addEventListener('click', () => publishPd(sec, accounts));
+
+  body.querySelectorAll('.pd-head').forEach((h) => h.addEventListener('click', () => {
+    const i = h.dataset.i;
+    const bx = body.querySelector('.pd-body-x[data-i="' + i + '"]');
+    const caret = h.querySelector('.pd-caret');
+    if (bx.hidden) { bx.hidden = false; caret.textContent = '\u25be'; renderPdExpanded(bx, accounts[+i], notesByKey[pdKey(accounts[+i])] || []); }
+    else { bx.hidden = true; caret.textContent = '\u25b8'; }
+  }));
+}
+
+function renderPdExpanded(bx, acct, notes) {
+  const txns = acct.txns || [];
+  const txnHtml = txns.length ? ('<table style="width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px">'
+    + '<thead><tr style="color:#888;font-size:10.5px;text-transform:uppercase"><th style="text-align:left;padding:4px 8px">Date</th><th style="text-align:left;padding:4px 8px">Type</th><th style="text-align:left;padding:4px 8px">Name</th><th style="text-align:left;padding:4px 8px">Memo</th><th style="text-align:right;padding:4px 8px">Amount</th></tr></thead><tbody>'
+    + txns.map((t) => '<tr style="border-top:1px solid #f0f0f0">'
+      + '<td style="padding:4px 8px;white-space:nowrap">' + bsEsc(t.date) + '</td>'
+      + '<td style="padding:4px 8px">' + bsEsc(t.type) + (t.doc_num ? ' #' + bsEsc(t.doc_num) : '') + '</td>'
+      + '<td style="padding:4px 8px">' + bsEsc(t.name) + '</td>'
+      + '<td style="padding:4px 8px;color:#666">' + bsEsc(t.memo) + '</td>'
+      + '<td style="padding:4px 8px;text-align:right">' + bsFmt(t.amount) + '</td></tr>').join('')
+    + '</tbody></table>') : '<div style="font-size:12.5px;color:var(--text3);margin-top:8px">No transactions.</div>';
+
+  bx.innerHTML = txnHtml + renderPdNotes(acct, notes);
+  wirePdNotes(bx, acct);
+}
+
+function renderPdNotes(acct, notes) {
+  const resolved = notes.length && notes.every((nt) => nt.resolved);
+  const msgs = notes.map((nt) => {
+    const who = nt.is_team ? 'Bald Ginger' : 'Client';
+    const when = nt.created_at ? new Date(nt.created_at).toLocaleDateString() : '';
+    return '<div style="padding:6px 0;border-top:1px solid #f2f2f2">'
+      + '<div style="font-size:11px;color:#999"><b style="color:' + (nt.is_team ? '#1B2A4B' : '#8a6500') + '">' + bsEsc(who) + '</b>' + (nt.author_name ? ' \u00b7 ' + bsEsc(nt.author_name) : '') + ' \u00b7 ' + when + '</div>'
+      + '<div style="font-size:13px;color:var(--text);margin-top:2px">' + bsEsc(nt.body) + '</div></div>';
+  }).join('');
+  return '<div class="pd-notes" style="margin-top:12px;padding:10px 12px;background:var(--warm,#f6f5ef);border-radius:8px">'
+    + '<div style="font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:#888;margin-bottom:4px">Notes' + (resolved ? ' \u00b7 <span style="color:#1e7a45">Resolved</span>' : '') + '</div>'
+    + (msgs || '<div style="font-size:12.5px;color:#999">No notes yet' + (state.isTeam ? '' : ' \u2014 leave a question and your bookkeeper will reply.') + '</div>')
+    + '<div style="display:flex;gap:8px;align-items:flex-start;margin-top:8px">'
+    + '<textarea class="pd-note-input" rows="1" placeholder="' + (state.isTeam ? 'Reply\u2026' : 'Ask about this line\u2026') + '" style="flex:1;border:1px solid var(--border);border-radius:7px;padding:7px 9px;font-family:inherit;font-size:13px;resize:vertical"></textarea>'
+    + '<button type="button" class="pd-note-add" style="border:0;background:#D85B31;color:#fff;border-radius:7px;padding:8px 14px;font-weight:700;font-size:12.5px;cursor:pointer">Post</button>'
+    + (state.isTeam && notes.length && !resolved ? '<button type="button" class="pd-note-resolve" style="border:1px solid var(--border);background:var(--bg);color:var(--text2);border-radius:7px;padding:8px 12px;font-size:12.5px;cursor:pointer">Resolve</button>' : '')
+    + '</div><div class="pd-note-msg" style="font-size:12px;margin-top:4px"></div></div>';
+}
+
+function wirePdNotes(bx, acct) {
+  const key = pdKey(acct);
+  const input = bx.querySelector('.pd-note-input');
+  const msg = bx.querySelector('.pd-note-msg');
+  const addBtn = bx.querySelector('.pd-note-add');
+  if (addBtn) addBtn.addEventListener('click', async () => {
+    const text = (input.value || '').trim();
+    if (!text) return;
+    addBtn.disabled = true;
+    try {
+      const { error } = await sb.from('pnl_detail_notes').insert({
+        client_id: state.clientId, period: bsKey(pdMonth), account_key: key,
+        author_id: state.userId, author_name: state.fullName || null, is_team: !!state.isTeam, body: text,
+      });
+      if (error) throw error;
+      const notes = (await loadNotesByKey())[key] || [];
+      bx.innerHTML = bx.innerHTML.split('<div class="pd-notes"')[0] + renderPdNotes(acct, notes);
+      wirePdNotes(bx, acct);
+    } catch (e) {
+      if (msg) { msg.textContent = 'Error: ' + (e.message || e); msg.style.color = '#b93232'; }
+      addBtn.disabled = false;
+    }
+  });
+  const resBtn = bx.querySelector('.pd-note-resolve');
+  if (resBtn) resBtn.addEventListener('click', async () => {
+    resBtn.disabled = true;
+    try {
+      const { error } = await sb.from('pnl_detail_notes').update({ resolved: true })
+        .eq('client_id', state.clientId).eq('period', bsKey(pdMonth)).eq('account_key', key);
+      if (error) throw error;
+      const notes = (await loadNotesByKey())[key] || [];
+      bx.innerHTML = bx.innerHTML.split('<div class="pd-notes"')[0] + renderPdNotes(acct, notes);
+      wirePdNotes(bx, acct);
+    } catch (e) {
+      if (msg) { msg.textContent = 'Error: ' + (e.message || e); msg.style.color = '#b93232'; }
+      resBtn.disabled = false;
+    }
+  });
 }
