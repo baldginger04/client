@@ -88,6 +88,99 @@ function renderUploadCard() {
       btn.parentNode.insertBefore(wrap, btn);
     }
   }
+
+  if (state.isTeam && !document.getElementById('qboRefreshRow')) {
+    const row = document.createElement('div');
+    row.id = 'qboRefreshRow';
+    row.style.cssText = 'margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap';
+    row.innerHTML = '<button type="button" id="qboRefreshBtn" style="border:1px solid #1B2A4B;background:#1B2A4B;color:#fff;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer">\u21ba Refresh P&L from QuickBooks</button><span style="font-size:12px;color:var(--text3)">Pulls the P&L for the period above straight from QuickBooks and compares it to what is stored.</span>';
+    card.appendChild(row);
+    document.getElementById('qboRefreshBtn').addEventListener('click', refreshFromQbo);
+  }
+}
+
+// =====================================================================
+// REFRESH P&L FROM QUICKBOOKS (team) — pull the period's P&L from QBO,
+// classify with the same engine uploads use, compare to what is stored,
+// then (on confirm) persist to pnl_data via the existing persist path.
+// =====================================================================
+async function refreshFromQbo() {
+  const periodEl = document.getElementById('uploadPeriod');
+  const period = periodEl ? periodEl.value : '';
+  if (!/^\d{4}-\d{2}$/.test(period || '')) { alert('Pick a period (month) in the field above first.'); return; }
+  const btn = document.getElementById('qboRefreshBtn');
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Pulling from QuickBooks...'; }
+  try {
+    const [y, mo] = period.split('-').map(Number);
+    const from = period + '-01';
+    const to = period + '-' + String(new Date(y, mo, 0).getDate()).padStart(2, '0');
+    const { data, error } = await sb.functions.invoke('qbo-pnl', { body: { client_id: state.clientId, from, to } });
+    if (error) throw new Error(error.message || 'request failed');
+    if (data && data.error === 'not_connected') { alert("QuickBooks isn't connected for this client. Connect it under Projections & Receiving Log -> Month-end review first."); return; }
+    if (data && data.error === 'reauth_needed') { alert('QuickBooks needs to be reconnected for this client.'); return; }
+    if (!data || !data.ok) throw new Error((data && (data.message || data.error)) || 'no result from QuickBooks');
+
+    const mappings = await fetchMappings(state.clientId);
+    const classified = matchAccounts(data.rows || [], mappings, state.clientId);
+
+    const qbo = {};
+    classified.forEach((r) => { const a = (r.amounts && r.amounts[period]) || 0; const cat = r.category || '(uncategorized)'; qbo[cat] = (qbo[cat] || 0) + a; });
+
+    const stored = {};
+    const sr = await sb.from('pnl_data').select('category,amount').eq('client_id', state.clientId).eq('period', period);
+    (sr.data || []).forEach((r) => { const cat = r.category || '(uncategorized)'; stored[cat] = (stored[cat] || 0) + Number(r.amount || 0); });
+
+    showQboCompare(period, qbo, stored, classified);
+  } catch (e) {
+    alert("Couldn't refresh from QuickBooks: " + (e.message || e));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+  }
+}
+
+function showQboCompare(period, qbo, stored, classified) {
+  const old = document.getElementById('qboCompareModal'); if (old) old.remove();
+  const fmt = (x) => '$' + (Number(x) || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+  const cats = Array.from(new Set([...Object.keys(qbo), ...Object.keys(stored)])).sort();
+  const hasStored = Object.keys(stored).length > 0;
+  let matches = 0;
+  const rowsHtml = cats.map((cat) => {
+    const q = qbo[cat] || 0, s = stored[cat] || 0, d = q - s, match = Math.abs(d) < 0.5;
+    if (match) matches++;
+    return '<tr style="border-top:1px solid #eee">'
+      + '<td style="padding:7px 10px">' + cat + '</td>'
+      + '<td style="padding:7px 10px;text-align:right">' + fmt(q) + '</td>'
+      + '<td style="padding:7px 10px;text-align:right;color:#888">' + (hasStored ? fmt(s) : '\u2014') + '</td>'
+      + '<td style="padding:7px 10px;text-align:right;font-weight:700;color:' + (match ? '#1e7a45' : '#b93232') + '">' + (!hasStored ? '\u2014' : (match ? '\u2713' : fmt(d))) + '</td></tr>';
+  }).join('');
+  const summary = hasStored ? (matches + ' of ' + cats.length + ' categories match what is stored.') : ('Nothing stored for ' + period + ' yet - this will be the first load.');
+
+  const ov = document.createElement('div');
+  ov.id = 'qboCompareModal';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(20,26,40,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px';
+  ov.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:640px;width:100%;max-height:86vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">'
+    + '<div style="padding:18px 22px;border-bottom:1px solid #eee"><div style="font-weight:800;font-size:18px;color:#1B2A4B">QuickBooks P&L \u2014 ' + period + '</div><div style="font-size:13px;color:#666;margin-top:3px">' + summary + '</div></div>'
+    + '<div style="padding:8px 12px"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.03em"><th style="padding:6px 10px;text-align:left">Category</th><th style="padding:6px 10px;text-align:right">QuickBooks</th><th style="padding:6px 10px;text-align:right">Stored</th><th style="padding:6px 10px;text-align:right">\u0394</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>'
+    + '<div style="padding:16px 22px;border-top:1px solid #eee;display:flex;gap:12px;justify-content:flex-end;align-items:center"><span id="qboApplyMsg" style="font-size:12.5px;color:#888;margin-right:auto"></span><button type="button" id="qboCancelBtn" style="border:1px solid #ccc;background:#fff;color:#444;border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer">Cancel</button><button type="button" id="qboApplyBtn" style="border:0;background:#D85B31;color:#fff;border-radius:8px;padding:9px 18px;font-weight:700;cursor:pointer">Apply to P&L data</button></div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+  document.getElementById('qboCancelBtn').addEventListener('click', () => ov.remove());
+  document.getElementById('qboApplyBtn').addEventListener('click', () => applyQboPnl(period, classified));
+}
+
+async function applyQboPnl(period, classified) {
+  const btn = document.getElementById('qboApplyBtn');
+  const msg = document.getElementById('qboApplyMsg');
+  if (btn) { btn.disabled = true; btn.textContent = 'Applying...'; }
+  try {
+    await persistPnlData(state.clientId, classified, [period], null);
+    if (msg) { msg.textContent = 'Applied \u2014 ' + period + ' updated. KPI and Prime tabs will use it on next open.'; msg.style.color = '#1e7a45'; }
+    setTimeout(() => { const ov = document.getElementById('qboCompareModal'); if (ov) ov.remove(); }, 1200);
+  } catch (e) {
+    if (msg) { msg.textContent = 'Error: ' + (e.message || e); msg.style.color = '#b93232'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Apply to P&L data'; }
+  }
 }
 
 let uploadBound = false;
