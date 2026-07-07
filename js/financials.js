@@ -68,28 +68,41 @@ export function unmountFinancials() {
 // =====================================================================
 
 function renderUploadCard() {
+  // Upload form retired — P&L, Balance Sheet and P&L Detail now come from
+  // QuickBooks. Hide the old upload card; give the team a standalone
+  // "Notify client" button at the top of the tab.
   const card = document.getElementById('uploadCard');
-  if (!card) return;
-  card.style.display = state.isTeam ? 'block' : 'none';
-
-  // Default the period selector to current month
-  const periodInput = document.getElementById('uploadPeriod');
-  if (periodInput && !periodInput.value) {
-    const d = new Date();
-    periodInput.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  if (card) card.style.display = 'none';
+  const pane = document.getElementById('tab-financials');
+  if (state.isTeam && pane && !document.getElementById('notifyBar')) {
+    const bar = document.createElement('div');
+    bar.id = 'notifyBar';
+    bar.style.cssText = 'display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-bottom:14px';
+    bar.innerHTML = '<span id="notifyMsg" style="font-size:12.5px;color:var(--text3)"></span>'
+      + '<button type="button" id="notifyClientBtn" style="border:1px solid #1B2A4B;background:#fff;color:#1B2A4B;border-radius:8px;padding:8px 16px;font-weight:700;font-size:13px;cursor:pointer">\u2709 Notify client</button>';
+    pane.insertBefore(bar, pane.firstChild);
+    document.getElementById('notifyClientBtn').addEventListener('click', notifyClient);
   }
+}
 
-  // Inject the "Notify client" checkbox into the form if it isn't already there.
-  // We append it right before the Upload button so it's visually clear that the
-  // checkbox controls behavior of the upload that's about to happen.
-  if (state.isTeam && !document.getElementById('uploadNotifyCheckbox')) {
-    const btn = document.getElementById('uploadBtn');
-    if (btn && btn.parentNode) {
-      const wrap = document.createElement('label');
-      wrap.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer;user-select:none;margin-right:.5rem;white-space:nowrap';
-      wrap.innerHTML = `<input type="checkbox" id="uploadNotifyCheckbox" style="cursor:pointer"> Notify client`;
-      btn.parentNode.insertBefore(wrap, btn);
-    }
+async function notifyClient() {
+  const btn = document.getElementById('notifyClientBtn');
+  const msg = document.getElementById('notifyMsg');
+  if (!state.clientId || !state.userId) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending\u2026'; }
+  if (msg) msg.textContent = '';
+  try {
+    const { data, error } = await sb.functions.invoke('send-upload-notification', {
+      body: { clientId: state.clientId, uploaderUserId: state.userId },
+    });
+    if (error) throw error;
+    if (data && data.ok === false) throw new Error(data.error || 'Unknown error');
+    const nRec = ((data && data.sentTo) || []).length;
+    if (msg) { msg.textContent = 'Notified ' + nRec + ' recipient' + (nRec === 1 ? '' : 's') + '.'; msg.style.color = '#1e7a45'; }
+  } catch (e) {
+    if (msg) { msg.textContent = "Couldn't send: " + (e.message || e); msg.style.color = '#b93232'; }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '\u2709 Notify client'; }
   }
 }
 
@@ -131,7 +144,7 @@ async function loadPublishedPnl(sec) {
     const r = await sb.from('pnl_reports').select('statement,generated_at').eq('client_id', state.clientId).eq('period', bsKey(pnlMonth)).eq('published', true).maybeSingle();
     if (r.error) throw r.error;
     if (!r.data) { body.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:10px 0">' + (state.isTeam ? 'Nothing published for ' + bsMonthName(pnlMonth) + ' yet. Pull it from QuickBooks above, then publish.' : 'No P&L has been posted for ' + bsMonthName(pnlMonth) + ' yet.') + '</div>'; return; }
-    body.innerHTML = renderBsRows(r.data.statement || []) + '<div style="font-size:11px;color:var(--text3);margin-top:8px">Published ' + (r.data.generated_at ? new Date(r.data.generated_at).toLocaleDateString() : '') + '</div>';
+    body.innerHTML = renderPnlStatement(r.data.statement || [], pnlPeriods()) + '<div style="font-size:11px;color:var(--text3);margin-top:8px">Published ' + (r.data.generated_at ? new Date(r.data.generated_at).toLocaleDateString() : '') + '</div>';
   } catch (e) { body.innerHTML = '<div style="color:#b93232;font-size:13px">Couldn\u2019t load: ' + bsEsc(e.message || e) + '</div>'; }
 }
 async function pullPnl(sec) {
@@ -141,7 +154,7 @@ async function pullPnl(sec) {
   body.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:6px 0">Pulling the P&L from QuickBooks\u2026</div>';
   try {
     const period = bsKey(pnlMonth);
-    const from = period + '-01', to = bsLastDay(pnlMonth);
+    const from = bsKey(bsAddMonths(pnlMonth, -12)) + '-01', to = bsLastDay(pnlMonth);
     const { data, error } = await sb.functions.invoke('qbo-pnl', { body: { client_id: state.clientId, from, to } });
     if (error) throw new Error(error.message || 'request failed');
     if (data && data.error === 'not_connected') { body.innerHTML = '<div style="color:#b93232;font-size:13px">QuickBooks isn\u2019t connected for this client.</div>'; return; }
@@ -158,7 +171,7 @@ async function pullPnl(sec) {
     const matchLine = hasStored ? (m + ' of ' + cats.size + ' categories match the stored P&L.') : ('Nothing stored for ' + bsMonthName(pnlMonth) + ' yet \u2014 this will be the first load.');
 
     body.innerHTML = '<div style="font-size:12.5px;color:var(--text3);margin-bottom:8px">' + matchLine + '</div>'
-      + renderBsRows(data.statement || [])
+      + renderPnlStatement(data.statement || [], pnlPeriods())
       + '<div style="display:flex;gap:12px;align-items:center;margin-top:14px"><button type="button" id="pnlPublish" style="border:0;background:#D85B31;color:#fff;border-radius:8px;padding:9px 16px;font-weight:700;cursor:pointer">Publish for client</button><span id="pnlPubMsg" style="font-size:12.5px;color:var(--text3)">Preview \u2014 publishing updates KPI/Prime and posts the statement to the client.</span></div>';
     sec.querySelector('#pnlPublish').addEventListener('click', () => publishPnl(sec, data.statement || [], classified));
   } catch (e) {
@@ -1781,4 +1794,29 @@ function wirePdNotes(bx, acct) {
       resBtn.disabled = false;
     }
   });
+}
+
+function pnlPeriods() {
+  const cur = pnlMonth, prior = bsAddMonths(pnlMonth, -1), yoy = bsAddMonths(pnlMonth, -12);
+  return [
+    { key: bsKey(cur), label: bsMonthName(cur) },
+    { key: bsKey(prior), label: bsMonthName(prior) },
+    { key: bsKey(yoy), label: bsMonthName(yoy) + ' (YoY)' },
+  ];
+}
+function renderPnlStatement(rows, periods) {
+  const head = '<tr><th style="text-align:left;padding:6px 10px"></th>'
+    + periods.map((p) => '<th style="text-align:right;padding:6px 10px;font-size:11px;color:#888;white-space:nowrap">' + bsEsc(p.label) + '</th>').join('') + '</tr>';
+  const body = (rows || []).map((r) => {
+    const pad = 10 + (r.indent || 0) * 16;
+    const bold = r.kind !== 'account';
+    const border = r.kind === 'total' ? 'border-top:1px solid var(--border)' : '';
+    const color = r.kind === 'header' ? 'var(--navy)' : 'var(--text)';
+    const cells = periods.map((p) => {
+      const v = r.amounts ? r.amounts[p.key] : null;
+      return '<td style="padding:5px 10px;text-align:right;' + (bold ? 'font-weight:700' : '') + '">' + (v == null ? '' : bsFmt(v)) + '</td>';
+    }).join('');
+    return '<tr style="' + border + '"><td style="padding:5px 10px 5px ' + pad + 'px;' + (bold ? 'font-weight:700;' : '') + 'color:' + color + '">' + bsEsc(r.label) + '</td>' + cells + '</tr>';
+  }).join('');
+  return '<table style="width:100%;border-collapse:collapse;font-size:13px;max-width:680px"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
 }
