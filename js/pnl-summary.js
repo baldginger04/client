@@ -331,7 +331,7 @@ function computeAndRenderFromCache() {
       amount: Number(r.amount),
     });
   }
-  const periods = Object.keys(byPeriod).sort();
+  const periods = completedPeriods(byPeriod);
   const current = periods[periods.length - 1];
   const prior = periods[periods.length - 2] || null;
   const yoy = subtractYear(current);
@@ -376,6 +376,16 @@ export function unmountPnlSummary() {
 // ---------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------
+function completedPeriods(byPeriod) {
+  // Exclude the current (partial) calendar month — the Prime Sheet should
+  // land on the last completed month, not a half-finished one.
+  const d = new Date();
+  const nowMonth = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  let ps = Object.keys(byPeriod).filter((p) => p < nowMonth).sort();
+  if (!ps.length) ps = Object.keys(byPeriod).sort();
+  return ps;
+}
+
 function subtractYear(period) {
   const [y, m] = period.split('-');
   return `${parseInt(y, 10) - 1}-${m}`;
@@ -568,7 +578,7 @@ function renderWindows() {
   const host = document.getElementById('pnl-windows');
   if (!host || !activeData) return;
   const { byPeriod } = activeData;
-  const periods = Object.keys(byPeriod).sort();
+  const periods = completedPeriods(byPeriod);
   const metric = findMetric(selectedMetric);
   const specs = [
     { n: 1,  label: 'Last month' },

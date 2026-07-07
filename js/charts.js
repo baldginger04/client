@@ -127,7 +127,11 @@ export async function mountKPI({ clientId }) {
   }
   // Sort ascending, then cap to the trailing 13 months so YoY comparisons line
   // up neatly (Apr 2026 alongside Apr 2025) without cramping the x-axis.
-  const allMonths = Object.keys(byPeriod).sort();
+  // Only completed months — exclude the current (partial) calendar month so a
+  // half-finished month never shows up in the trends.
+  const nowMonth = (() => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); })();
+  let allMonths = Object.keys(byPeriod).filter((p) => p < nowMonth).sort();
+  if (!allMonths.length) allMonths = Object.keys(byPeriod).sort();
   const months = allMonths.slice(-13);
 
   // Wait for Chart.js to be ready (it's loaded async via CDN in index.html)
