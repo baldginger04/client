@@ -159,7 +159,7 @@ async function runReview() {
   btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Pulling from QuickBooks…';
   out.innerHTML = `<div class="rc-loading">Reading ${monthName(month)} bills, accounts, and the receiving log…</div>`;
   try {
-    const d = await callFn('qbo-reconcile', null, { month: monthKey(month) });
+    const d = await callFn('qbo-close-reconcile', null, { month: monthKey(month) });
     if (d && d.error === 'not_connected') { out.innerHTML = `<div class="rc-err">QuickBooks isn't connected for this client.</div>`; return; }
     if (d && d.error === 'reauth_needed') { out.innerHTML = `<div class="rc-err">QuickBooks needs to be reconnected — the authorization expired. Disconnect and reconnect above.</div>`; return; }
     if (!d || !d.ok) throw new Error((d && (d.message || d.error)) || 'no result');
