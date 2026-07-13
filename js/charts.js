@@ -9,13 +9,17 @@
 //   Projections-tab UI from scratch. Reading from pnl_data only — never
 //   parses xlsx files; that's pnl-parser.js's job.
 //
-// Six charts (per the agreed design):
+// Eight charts (per the agreed design):
 //   1. Revenue trend     ($)
 //   2. Sales mix         (stacked area, % of total)
 //   3. Food cost %       (food_cogs / food_sales)
-//   4. Beverage cost %   (liquor / beer / wine, three lines)
+//   4. Beverage cost %   (liquor / beer / wine lines + bold Total LBW line:
+//                         (liquor+beer+wine COGS) / (liquor+beer+wine sales))
 //   5. Labor %           ((all labor + taxes + benefits) / total sales)
-//   6. Prime cost %      ((labor + cogs) / total sales)
+//   6. BOH Labor %       (labor_boh wages / total sales — excl. taxes/benefits,
+//                         which aren't split by department)
+//   7. FOH Labor %       (labor_foh wages / total sales — same note)
+//   8. Prime cost %      ((labor + cogs) / total sales)
 //
 // All cost % charts have target band shading via Chart.js annotation logic
 // using a custom "fill between" plugin (built inline — no extra dep).
@@ -35,6 +39,9 @@ const COLORS = {
   // Cost/labor accents — desaturated versions for charts where they're alone
   total:       '#1f3543',
   labor:       '#3f6f8c',
+  labor_boh:   '#2e7d5b',
+  labor_foh:   '#b0622d',
+  lbw_total:   '#1f3543',
   prime:       '#1f3543',
   // Target band colors (translucent green)
   targetFill:  'rgba(34, 139, 84, 0.10)',
@@ -49,6 +56,10 @@ const TARGETS = {
   beer_cost_pct:    { min: 22, max: 26, label: 'Target 22–26%' },
   wine_cost_pct:    { min: 30, max: 40, label: 'Target 30–40%' },
   labor_pct:        { min: 25, max: 35, label: 'Target 25–35%' },
+  // BOH/FOH bands are wages-only against TOTAL sales (full-service starting
+  // points — tune these as you calibrate against the client base).
+  labor_boh_pct:    { min: 10, max: 15, label: 'Target 10–15%' },
+  labor_foh_pct:    { min: 8,  max: 12, label: 'Target 8–12%' },
   prime_cost_pct:   { min: 50, max: 60, label: 'Target <60%' },
 };
 
@@ -146,8 +157,10 @@ export async function mountKPI({ clientId }) {
     ${chartCardHtml('chart-revenue',  'Revenue', 'Total sales over time')}
     ${chartCardHtml('chart-mix',      'Sales Mix', 'Share of revenue by category')}
     ${chartCardHtml('chart-food-cost','Food Cost %', 'Food COGS as % of food sales')}
-    ${chartCardHtml('chart-bev-cost', 'Beverage Cost %', 'Liquor, beer, wine cost percentages')}
+    ${chartCardHtml('chart-bev-cost', 'Beverage Cost %', 'Liquor, beer, wine &amp; total LBW cost percentages')}
     ${chartCardHtml('chart-labor',    'Labor %', 'All labor + taxes + benefits as % of sales')}
+    ${chartCardHtml('chart-labor-boh','BOH Labor %', 'Kitchen wages as % of total sales')}
+    ${chartCardHtml('chart-labor-foh','FOH Labor %', 'Front-of-house wages as % of total sales')}
     ${chartCardHtml('chart-prime',    'Prime Cost %', 'Labor + COGS as % of sales')}
   `;
 
@@ -158,6 +171,16 @@ export async function mountKPI({ clientId }) {
   renderFoodCost(months, byPeriod);
   renderBevCost(months, byPeriod);
   renderLabor(months, byPeriod);
+  renderLaborSplit(months, byPeriod, {
+    canvasId: 'chart-labor-boh', label: 'BOH Labor %',
+    category: 'labor_boh', color: COLORS.labor_boh,
+    fill: 'rgba(46,125,91,0.08)', target: TARGETS.labor_boh_pct,
+  });
+  renderLaborSplit(months, byPeriod, {
+    canvasId: 'chart-labor-foh', label: 'FOH Labor %',
+    category: 'labor_foh', color: COLORS.labor_foh,
+    fill: 'rgba(176,98,45,0.08)', target: TARGETS.labor_foh_pct,
+  });
   renderPrime(months, byPeriod);
 }
 
@@ -391,6 +414,28 @@ function renderBevCost(months, byPeriod) {
     spanGaps: false,
   }));
 
+  // Total LBW — blended alcohol cost: summed L/B/W COGS over summed L/B/W
+  // sales (ratio-of-sums, the correct way to blend percentages). Drawn as a
+  // bolder dark line so the headline number reads above the category detail.
+  // Only added when at least one alcohol category is active, so food-only
+  // clients don't get an empty line in the legend.
+  if (active.length) {
+    datasets.push({
+      label: 'Total LBW',
+      data: months.map((p) => {
+        const cogs  = (byPeriod[p].liquor_cogs  || 0) + (byPeriod[p].beer_cogs  || 0) + (byPeriod[p].wine_cogs  || 0);
+        const sales = (byPeriod[p].liquor_sales || 0) + (byPeriod[p].beer_sales || 0) + (byPeriod[p].wine_sales || 0);
+        return ratio(cogs, sales);
+      }),
+      borderColor: COLORS.lbw_total,
+      backgroundColor: 'transparent',
+      borderWidth: 2.5,
+      tension: 0.25,
+      pointRadius: 3,
+      spanGaps: false,
+    });
+  }
+
   // With three target bands overlapping (e.g. liquor 18-22, beer 22-26, wine 30-40),
   // shading them all is visually messy. We omit target bands here and rely on
   // tooltips / the "Target" lines in the user's mental model. Industry standard.
@@ -422,6 +467,30 @@ function renderLabor(months, byPeriod) {
       datasets: [{ label: 'Labor %', data, borderColor: COLORS.labor, backgroundColor: 'rgba(63,111,140,0.08)', fill: true, tension: 0.25, pointRadius: 3 }],
     },
     options: baseOptions({ yIsPct: true, targetBands: [TARGETS.labor_pct] }),
+    plugins: [targetBandPlugin],
+  });
+}
+
+// Shared renderer for the BOH / FOH split charts. Wages-only by design:
+// labor_benefits and payroll_taxes aren't split by department in the COA,
+// so folding them in here would silently misstate one side or the other.
+// Denominator is total sales (net of discounts), matching renderLabor, so
+// BOH % + FOH % + management/other visually reconcile against the Labor %
+// chart (less taxes/benefits).
+function renderLaborSplit(months, byPeriod, { canvasId, label, category, color, fill, target }) {
+  const SALES_CATS = ['food_sales','liquor_sales','beer_sales','wine_sales','na_bev_sales','merchandise_sales','other_sales'];
+  const data = months.map((p) => {
+    const sales = sumCategories(byPeriod[p], SALES_CATS) + (byPeriod[p].discounts || 0);
+    return ratio(byPeriod[p][category] || 0, sales);
+  });
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  activeCharts[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: months.map(shortPeriodLabel),
+      datasets: [{ label, data, borderColor: color, backgroundColor: fill, fill: true, tension: 0.25, pointRadius: 3, spanGaps: false }],
+    },
+    options: baseOptions({ yIsPct: true, targetBands: [target] }),
     plugins: [targetBandPlugin],
   });
 }
