@@ -221,8 +221,14 @@ async function enterApp(user) {
   // so the cross-client open-questions board is the first thing they see every
   // time they open the portal. Clients resume their last tab, falling back to Home.
   // Everyone (team included) resumes their last tab, falling back to Home.
+  // Deep link from notification emails: ?tab=...&client=...&msg=...
+  // Overrides the remembered tab/client for this load only, then cleans the URL.
+  const qp = new URLSearchParams(location.search);
+  const dlTab = qp.get('tab'), dlClient = qp.get('client'), dlMsg = qp.get('msg');
+  if (dlMsg) window.__deepLinkMsgId = dlMsg;
+  if (dlTab || dlClient || dlMsg) history.replaceState(null, '', location.pathname);
   const savedTab = localStorage.getItem(LAST_TAB_KEY);
-  state.currentTab = TABS.includes(savedTab) ? savedTab : DEFAULT_TAB;
+  state.currentTab = TABS.includes(dlTab) ? dlTab : (TABS.includes(savedTab) ? savedTab : DEFAULT_TAB);
   highlightNav(state.currentTab);
   showPane(state.currentTab);
 
@@ -231,7 +237,8 @@ async function enterApp(user) {
     showNoClients();
   } else {
     const saved = localStorage.getItem(LAST_CLIENT_KEY);
-    const initial = state.clients.find((c) => c.id === saved) || state.clients[0];
+    const initial = (dlClient && state.clients.find((c) => c.id === dlClient))
+      || state.clients.find((c) => c.id === saved) || state.clients[0];
     await setCurrentClient(initial.id);
     // setCurrentClient mounts the active *client* tab; Home isn't client-scoped,
     // so when it's the landing tab we mount it explicitly.

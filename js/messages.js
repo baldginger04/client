@@ -442,6 +442,31 @@ function render() {
   staged.forEach((_f, key) => { if (key !== 'new') renderStagedPreview(key); });
 
   hydrateAttachments();
+
+  // Deep link from a notification email: scroll to the linked message's card
+  // and flash it. If it lives under a cleared question, reveal the history
+  // first (one re-render), then scroll on the second pass.
+  const dl = window.__deepLinkMsgId;
+  if (dl) {
+    const m = cache.find((x) => x.id === dl);
+    if (!m) { window.__deepLinkMsgId = null; return; }
+    const rootId = m.parent_message_id || m.id;
+    const rootMsg = cache.find((x) => x.id === rootId);
+    if (rootMsg && rootMsg.cleared && !showResolved) {
+      showResolved = true;
+      const t = $('showResolvedToggle'); if (t) t.checked = true;
+      render();
+      return;
+    }
+    const card = list.querySelector(`.qcard[data-root-id="${cssEsc(rootId)}"]`);
+    window.__deepLinkMsgId = null;
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.style.transition = 'box-shadow .4s ease';
+      card.style.boxShadow = '0 0 0 3px #D85B31';
+      setTimeout(() => { card.style.boxShadow = ''; }, 2600);
+    }
+  }
 }
 
 function groupReplies(all) {
