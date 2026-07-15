@@ -131,11 +131,14 @@ function drawPnlSection(sec) {
     + '<button type="button" id="pnlNext" style="width:30px;height:30px;border:1px solid var(--border);background:var(--bg);border-radius:7px;cursor:pointer">\u203a</button>'
     + '</div>'
     + (team ? '<button type="button" id="pnlPull" style="margin-left:auto;border:1px solid #1B2A4B;background:#1B2A4B;color:#fff;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer">\u21ba Pull from QuickBooks</button>' : '')
+    + (team ? '<button type="button" id="pnlBackfill" style="border:1px solid var(--border);background:var(--bg);color:var(--text);border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer">\u21e3 Backfill history</button>' : '')
     + '</div>'
+    + (team ? '<div id="pnlBackfillPanel" style="display:none"></div>' : '')
     + '<div id="pnlBody"><div style="color:var(--text3);font-size:13px;padding:6px 0">Loading\u2026</div></div>';
   sec.querySelector('#pnlPrev').addEventListener('click', () => { pnlMonth = bsAddMonths(pnlMonth, -1); drawPnlSection(sec); });
   sec.querySelector('#pnlNext').addEventListener('click', () => { pnlMonth = bsAddMonths(pnlMonth, 1); drawPnlSection(sec); });
   if (team) sec.querySelector('#pnlPull').addEventListener('click', () => pullPnl(sec));
+  if (team) sec.querySelector('#pnlBackfill').addEventListener('click', () => toggleBackfill(sec));
   loadPublishedPnl(sec);
 }
 async function loadPublishedPnl(sec) {
@@ -146,6 +149,68 @@ async function loadPublishedPnl(sec) {
     if (!r.data) { body.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:10px 0">' + (state.isTeam ? 'Nothing published for ' + bsMonthName(pnlMonth) + ' yet. Pull it from QuickBooks above, then publish.' : 'No P&L has been posted for ' + bsMonthName(pnlMonth) + ' yet.') + '</div>'; return; }
     body.innerHTML = renderPnlStatement(r.data.statement || [], pnlPeriods()) + '<div style="font-size:11px;color:var(--text3);margin-top:8px">Published ' + (r.data.generated_at ? new Date(r.data.generated_at).toLocaleDateString() : '') + '</div>';
   } catch (e) { body.innerHTML = '<div style="color:#b93232;font-size:13px">Couldn\u2019t load: ' + bsEsc(e.message || e) + '</div>'; }
+}
+// ── Backfill history: one wide qbo-pnl pull, classified under CURRENT
+// mappings, persisted month-by-month into pnl_data. Feeds KPI/Prime/charts;
+// deliberately does NOT publish statements (that stays a monthly human act).
+// Skips months that already have data unless overwrite is ticked.
+function bfLastClosedMonth() {
+  const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+}
+function toggleBackfill(sec) {
+  const p = sec.querySelector('#pnlBackfillPanel'); if (!p) return;
+  if (p.style.display !== 'none') { p.style.display = 'none'; return; }
+  p.style.display = 'block';
+  p.innerHTML =
+    '<div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px;background:var(--bg)">'
+    + '<div style="font-weight:700;font-size:13.5px;margin-bottom:8px">Backfill P&amp;L history from QuickBooks</div>'
+    + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px">'
+    + '<label>From <input type="month" id="bfFrom" value="2025-01" style="border:1px solid var(--border);border-radius:7px;padding:5px 7px"></label>'
+    + '<label>Through <input type="month" id="bfTo" value="' + bfLastClosedMonth() + '" style="border:1px solid var(--border);border-radius:7px;padding:5px 7px"></label>'
+    + '<label style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="bfOverwrite"> Overwrite months that already have data</label>'
+    + '<button type="button" id="bfRun" style="border:0;background:#D85B31;color:#fff;border-radius:8px;padding:7px 14px;font-weight:700;cursor:pointer">Run backfill</button>'
+    + '</div>'
+    + '<div id="bfLog" style="font-size:12.5px;color:var(--text3);margin-top:8px;white-space:pre-line"></div>'
+    + '</div>';
+  p.querySelector('#bfRun').addEventListener('click', () => runBackfill(sec));
+}
+async function runBackfill(sec) {
+  const p = sec.querySelector('#pnlBackfillPanel');
+  const log = p.querySelector('#bfLog');
+  const btn = p.querySelector('#bfRun');
+  const fromM = p.querySelector('#bfFrom').value, toM = p.querySelector('#bfTo').value;
+  const overwrite = p.querySelector('#bfOverwrite').checked;
+  const say = (t) => { log.textContent += (log.textContent ? '\n' : '') + t; };
+  if (!/^\d{4}-\d{2}$/.test(fromM) || !/^\d{4}-\d{2}$/.test(toM) || fromM > toM) { log.textContent = 'Pick a valid month range.'; return; }
+  btn.disabled = true; btn.textContent = 'Running\u2026'; log.textContent = '';
+  try {
+    const from = fromM + '-01';
+    const [ty, tm] = toM.split('-').map(Number);
+    const to = toM + '-' + String(new Date(ty, tm, 0).getDate()).padStart(2, '0');
+    say('Pulling ' + fromM + ' \u2192 ' + toM + ' from QuickBooks\u2026');
+    const { data, error } = await sb.functions.invoke('qbo-pnl', { body: { client_id: state.clientId, from, to } });
+    if (error) throw new Error(error.message || 'request failed');
+    if (data && data.error === 'not_connected') { say('QuickBooks isn\u2019t connected for this client.'); return; }
+    if (data && data.error === 'reauth_needed') { say('QuickBooks needs to be reconnected.'); return; }
+    if (!data || !data.ok) throw new Error((data && (data.message || data.error)) || 'no result');
+    const months = data.months || [];
+    say('Got ' + months.length + ' months, ' + (data.rows || []).length + ' account rows. Classifying\u2026');
+    const mappings = await fetchMappings(state.clientId);
+    const classified = matchAccounts(data.rows || [], mappings, state.clientId);
+    const er = await sb.from('pnl_data').select('period').eq('client_id', state.clientId).in('period', months).range(0, 49999);
+    if (er.error) throw er.error;
+    const existing = new Set((er.data || []).map((r) => r.period));
+    const target = overwrite ? months : months.filter((m) => !existing.has(m));
+    const skipped = months.length - target.length;
+    if (!target.length) { say('All ' + months.length + ' months already have data \u2014 nothing written. Tick overwrite to replace them.'); return; }
+    say('Writing ' + target.length + ' month(s)' + (skipped ? ' (skipping ' + skipped + ' that already have data)' : '') + '\u2026');
+    const res = await persistPnlData(state.clientId, classified, target, null);
+    say('Done \u2014 ' + (res && res.inserted != null ? res.inserted : '?') + ' rows across: ' + target.join(', '));
+    say('KPI Dashboard, Prime Sheet, and charts now include this history. Statements were not published.');
+  } catch (e) {
+    say('Error: ' + (e.message || e));
+  } finally { btn.disabled = false; btn.textContent = 'Run backfill'; }
 }
 async function pullPnl(sec) {
   const btn = sec.querySelector('#pnlPull'); const body = sec.querySelector('#pnlBody');
