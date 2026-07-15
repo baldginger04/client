@@ -129,6 +129,7 @@ function drawPnlSection(sec) {
     + '<button type="button" id="pnlPrev" style="width:30px;height:30px;border:1px solid var(--border);background:var(--bg);border-radius:7px;cursor:pointer">\u2039</button>'
     + '<span style="font-weight:700;min-width:130px;text-align:center">' + bsMonthName(pnlMonth) + '</span>'
     + '<button type="button" id="pnlNext" style="width:30px;height:30px;border:1px solid var(--border);background:var(--bg);border-radius:7px;cursor:pointer">\u203a</button>'
+    + '<select id="pnlJump" style="border:1px solid var(--border);background:var(--bg);border-radius:7px;padding:5px 7px;font-size:12.5px;color:var(--text)"><option value="">Jump to\u2026</option></select>'
     + '</div>'
     + (team ? '<button type="button" id="pnlPull" style="margin-left:auto;border:1px solid #1B2A4B;background:#1B2A4B;color:#fff;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer">\u21ba Pull from QuickBooks</button>' : '')
     + (team ? '<button type="button" id="pnlBackfill" style="border:1px solid var(--border);background:var(--bg);color:var(--text);border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer">\u21e3 Backfill history</button>' : '')
@@ -137,6 +138,7 @@ function drawPnlSection(sec) {
     + '<div id="pnlBody"><div style="color:var(--text3);font-size:13px;padding:6px 0">Loading\u2026</div></div>';
   sec.querySelector('#pnlPrev').addEventListener('click', () => { pnlMonth = bsAddMonths(pnlMonth, -1); drawPnlSection(sec); });
   sec.querySelector('#pnlNext').addEventListener('click', () => { pnlMonth = bsAddMonths(pnlMonth, 1); drawPnlSection(sec); });
+  loadPnlJump(sec);
   if (team) sec.querySelector('#pnlPull').addEventListener('click', () => pullPnl(sec));
   if (team) sec.querySelector('#pnlBackfill').addEventListener('click', () => toggleBackfill(sec));
   loadPublishedPnl(sec);
@@ -147,7 +149,8 @@ async function loadPublishedPnl(sec) {
     const r = await sb.from('pnl_reports').select('statement,generated_at').eq('client_id', state.clientId).eq('period', bsKey(pnlMonth)).eq('published', true).maybeSingle();
     if (r.error) throw r.error;
     if (!r.data) { body.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:10px 0">' + (state.isTeam ? 'Nothing published for ' + bsMonthName(pnlMonth) + ' yet. Pull it from QuickBooks above, then publish.' : 'No P&L has been posted for ' + bsMonthName(pnlMonth) + ' yet.') + '</div>'; return; }
-    body.innerHTML = renderPnlStatement(r.data.statement || [], pnlPeriods()) + '<div style="font-size:11px;color:var(--text3);margin-top:8px">Published ' + (r.data.generated_at ? new Date(r.data.generated_at).toLocaleDateString() : '') + '</div>';
+    body.innerHTML = renderPnlStatement(r.data.statement || [], pnlPeriods()) + '<div style="font-size:11px;color:var(--text3);margin-top:8px">Published ' + (r.data.generated_at ? new Date(r.data.generated_at).toLocaleDateString() : '') + ' \u00b7 click any account line to see its transactions</div>';
+    wirePnlDrill(body);
   } catch (e) { body.innerHTML = '<div style="color:#b93232;font-size:13px">Couldn\u2019t load: ' + bsEsc(e.message || e) + '</div>'; }
 }
 // ── Backfill history: one wide qbo-pnl pull, classified under CURRENT
@@ -239,6 +242,7 @@ async function pullPnl(sec) {
       + renderPnlStatement(data.statement || [], pnlPeriods())
       + '<div style="display:flex;gap:12px;align-items:center;margin-top:14px"><button type="button" id="pnlPublish" style="border:0;background:#D85B31;color:#fff;border-radius:8px;padding:9px 16px;font-weight:700;cursor:pointer">Publish for client</button><span id="pnlPubMsg" style="font-size:12.5px;color:var(--text3)">Preview \u2014 publishing updates KPI/Prime and posts the statement to the client.</span></div>';
     sec.querySelector('#pnlPublish').addEventListener('click', () => publishPnl(sec, data.statement || [], classified));
+    wirePnlDrill(body);
   } catch (e) {
     body.innerHTML = '<div style="color:#b93232;font-size:13px">Couldn\u2019t pull: ' + bsEsc(e.message || e) + '</div>';
   } finally { if (btn) { btn.disabled = false; btn.textContent = orig; } }
@@ -1870,6 +1874,7 @@ function pnlPeriods() {
   ];
 }
 function renderPnlStatement(rows, periods) {
+  const cur = periods && periods[0] ? periods[0] : { key: '', label: '' };
   const head = '<tr><th style="text-align:left;padding:6px 10px"></th>'
     + periods.map((p) => '<th style="text-align:right;padding:6px 10px;font-size:11px;color:#888;white-space:nowrap">' + bsEsc(p.label) + '</th>').join('') + '</tr>';
   const body = (rows || []).map((r) => {
@@ -1881,7 +1886,114 @@ function renderPnlStatement(rows, periods) {
       const v = r.amounts ? r.amounts[p.key] : null;
       return '<td style="padding:5px 10px;text-align:right;' + (bold ? 'font-weight:700' : '') + '">' + (v == null ? '' : bsFmt(v)) + '</td>';
     }).join('');
-    return '<tr style="' + border + '"><td style="padding:5px 10px 5px ' + pad + 'px;' + (bold ? 'font-weight:700;' : '') + 'color:' + color + '">' + bsEsc(r.label) + '</td>' + cells + '</tr>';
+    const isAcct = r.kind === 'account';
+    const curAmt = (isAcct && r.amounts && r.amounts[cur.key] != null) ? r.amounts[cur.key] : '';
+    const attrs = isAcct
+      ? ' class="pnl-acct" data-label="' + bsEsc(r.label) + '" data-amt="' + curAmt + '" title="Show transactions" '
+      : ' ';
+    const caret = isAcct ? '<span class="pnl-caret" style="color:#bbb;font-size:10px;margin-right:5px">\u25b8</span>' : '';
+    return '<tr' + attrs + 'style="' + border + (isAcct ? ';cursor:pointer' : '') + '"><td style="padding:5px 10px 5px ' + pad + 'px;' + (bold ? 'font-weight:700;' : '') + 'color:' + color + '">' + caret + bsEsc(r.label) + '</td>' + cells + '</tr>';
   }).join('');
-  return '<table style="width:100%;border-collapse:collapse;font-size:13px;max-width:680px"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
+  return '<table data-period="' + bsEsc(cur.key) + '" data-plabel="' + bsEsc(cur.label) + '" style="width:100%;border-collapse:collapse;font-size:13px;max-width:680px"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
+}
+
+// ── Inline drill-down: click an account line in the statement, see that
+// month's transactions LIVE from QuickBooks. One fetch per month (cached for
+// the session); every expanded row reads from it. When the live total differs
+// from the published figure, the row says so instead of leaving the reader to
+// wonder which number to trust.
+const pnlDrillCache = {};
+function pnlDetailLive(period) {
+  const key = state.clientId + '|' + period;
+  if (!pnlDrillCache[key]) {
+    const [y, m] = period.split('-').map(Number);
+    const from = period + '-01';
+    const to = period + '-' + String(new Date(y, m, 0).getDate()).padStart(2, '0');
+    pnlDrillCache[key] = sb.functions.invoke('qbo-pnl-detail', { body: { client_id: state.clientId, from, to } })
+      .then(({ data, error }) => {
+        if (error) throw new Error(error.message || 'request failed');
+        if (data && data.error === 'not_connected') throw new Error('QuickBooks isn\u2019t connected for this client.');
+        if (data && data.error === 'reauth_needed') throw new Error('QuickBooks needs to be reconnected \u2014 ask your Bald Ginger team.');
+        if (!data || !data.ok) throw new Error((data && (data.message || data.error)) || 'no result');
+        return data.accounts || [];
+      })
+      .catch((e) => { delete pnlDrillCache[key]; throw e; });
+  }
+  return pnlDrillCache[key];
+}
+function pnlNorm(x) { return String(x || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+function pnlFindAcct(accounts, label) {
+  const L = pnlNorm(label);
+  return accounts.find((a) => pnlNorm((a.account_number ? a.account_number + ' ' : '') + a.account_name) === L)
+    || accounts.find((a) => pnlNorm(a.account_name) === L)
+    || accounts.find((a) => a.account_number && L.startsWith(pnlNorm(a.account_number)) && L.indexOf(pnlNorm(a.account_name)) !== -1)
+    || null;
+}
+function pnlDrillHtml(acct, stmtAmt, plabel) {
+  const txns = (acct && acct.txns) || [];
+  const live = acct ? Number(acct.total || 0) : 0;
+  let note = '';
+  if (acct == null) {
+    note = '<div style="font-size:12px;color:var(--text3);margin-bottom:6px">No transaction detail found for this line in QuickBooks.</div>';
+  } else if (stmtAmt !== '' && Math.abs(live - Number(stmtAmt)) > 0.5) {
+    note = '<div style="font-size:12px;color:#8a5a00;background:#fbf0dd;border-radius:6px;padding:6px 9px;margin-bottom:6px">Live from QuickBooks: ' + bsFmt(live) + ' \u2014 differs from the published statement (' + bsFmt(Number(stmtAmt)) + '). The books have changed since this month was published.</div>';
+  } else {
+    note = '<div style="font-size:11.5px;color:var(--text3);margin-bottom:4px">Live from QuickBooks' + (stmtAmt !== '' ? ' \u2014 matches the published statement.' : '.') + '</div>';
+  }
+  const table = txns.length ? ('<table style="width:100%;border-collapse:collapse;font-size:12.5px">'
+    + '<thead><tr style="color:#888;font-size:10.5px;text-transform:uppercase"><th style="text-align:left;padding:4px 8px">Date</th><th style="text-align:left;padding:4px 8px">Type</th><th style="text-align:left;padding:4px 8px">Name</th><th style="text-align:left;padding:4px 8px">Memo</th><th style="text-align:right;padding:4px 8px">Amount</th></tr></thead><tbody>'
+    + txns.map((t) => '<tr style="border-top:1px solid #f0f0f0">'
+      + '<td style="padding:4px 8px;white-space:nowrap">' + bsEsc(t.date) + '</td>'
+      + '<td style="padding:4px 8px">' + bsEsc(t.type) + (t.doc_num ? ' #' + bsEsc(t.doc_num) : '') + '</td>'
+      + '<td style="padding:4px 8px">' + bsEsc(t.name) + '</td>'
+      + '<td style="padding:4px 8px;color:#666">' + bsEsc(t.memo) + '</td>'
+      + '<td style="padding:4px 8px;text-align:right">' + bsFmt(t.amount) + '</td></tr>').join('')
+    + '</tbody></table>') : (acct ? '<div style="font-size:12.5px;color:var(--text3)">No transactions this month.</div>' : '');
+  return note + table;
+}
+function wirePnlDrill(container) {
+  container.onclick = async (e) => {
+    const tr = e.target.closest && e.target.closest('tr.pnl-acct');
+    if (!tr || !container.contains(tr)) return;
+    const table = tr.closest('table');
+    const period = table ? table.getAttribute('data-period') : '';
+    const plabel = table ? table.getAttribute('data-plabel') : '';
+    if (!period) return;
+    const caret = tr.querySelector('.pnl-caret');
+    const next = tr.nextElementSibling;
+    if (next && next.classList.contains('pnl-drill')) { next.remove(); if (caret) caret.textContent = '\u25b8'; return; }
+    if (caret) caret.textContent = '\u25be';
+    const cols = tr.children.length;
+    const drill = document.createElement('tr');
+    drill.className = 'pnl-drill';
+    drill.innerHTML = '<td colspan="' + cols + '" style="padding:8px 12px 12px 26px;background:var(--bg)"><div style="font-size:11px;color:var(--text3)">Loading ' + bsEsc(plabel) + ' transactions\u2026</div></td>';
+    tr.after(drill);
+    try {
+      const accounts = await pnlDetailLive(period);
+      if (!drill.isConnected) return;
+      const acct = pnlFindAcct(accounts, tr.getAttribute('data-label'));
+      drill.firstElementChild.innerHTML = '<div style="font-weight:700;font-size:12px;margin-bottom:4px">' + bsEsc(tr.getAttribute('data-label')) + ' \u2014 ' + bsEsc(plabel) + '</div>' + pnlDrillHtml(acct, tr.getAttribute('data-amt'), plabel);
+    } catch (err) {
+      if (drill.isConnected) drill.firstElementChild.innerHTML = '<div style="font-size:12.5px;color:#b93232">Couldn\u2019t load transactions: ' + bsEsc(err.message || err) + '</div>';
+    }
+  };
+}
+async function loadPnlJump(sec) {
+  const sel = sec.querySelector('#pnlJump'); if (!sel) return;
+  try {
+    const r = await sb.from('pnl_reports').select('period').eq('client_id', state.clientId).eq('published', true).order('period', { ascending: false }).range(0, 199);
+    (r.data || []).forEach((row) => {
+      const [y, m] = String(row.period).split('-').map(Number);
+      const o = document.createElement('option');
+      o.value = row.period;
+      o.textContent = new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+      sel.appendChild(o);
+    });
+    sel.addEventListener('change', () => {
+      if (!sel.value) return;
+      const [y, m] = sel.value.split('-').map(Number);
+      pnlMonth = new Date(y, m - 1, 1);
+      drawPnlSection(sec);
+    });
+  } catch (e) { /* picker is a convenience; arrows still work */ }
 }
