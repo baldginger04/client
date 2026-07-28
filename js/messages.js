@@ -6,9 +6,15 @@
 //   • Each "question" is a root message (parent_message_id = null).
 //   • Replies hang off a question (parent_message_id = the root's id).
 //   • A question + all its replies render as ONE card.
-//   • Clearing a question cascades to its replies (DB trigger), so the
-//     whole card disappears as a unit. "Show resolved" brings them back;
-//     clearing is reversible (Reopen).
+//   • Clearing a question cascades to its replies, so the whole card
+//     disappears as a unit. "Show resolved" brings them back; clearing is
+//     reversible (Reopen). The cascade is issued explicitly here rather than
+//     left to a DB trigger, so the behavior holds no matter what the database
+//     is or isn't doing.
+//   • Replying to a RESOLVED question reopens it. Without that, the reply
+//     lands under a cleared root: invisible in the default open list while
+//     still a live, unanswered message. That is exactly how a client question
+//     went unnoticed — asked from inside "Show cleared history", then buried.
 //   • Either side can ask, reply, attach a screenshot/PDF, and clear.
 //
 // Attachments live in the private "message-attachments" bucket at
@@ -292,18 +298,41 @@ async function uploadAttachment(file) {
 
 async function toggleCleared(rootId, toCleared) {
   // Optimistic: flip the root + its replies in the cache and re-render now.
-  // The DB trigger performs the same cascade server-side.
   cache.forEach((m) => {
     if (m.id === rootId || m.parent_message_id === rootId) m.cleared = toCleared;
   });
   render();
 
-  const { error } = await sb.from('messages').update({ cleared: toCleared }).eq('id', rootId);
+  // Cascade to the replies explicitly. This used to update the root row alone
+  // and rely on a server-side trigger to carry the change down; when the two
+  // disagreed, replies were left at cleared = false under a cleared root —
+  // rows that no list rendered but the badge still counted.
+  const { error } = await sb.from('messages')
+    .update({ cleared: toCleared })
+    .or(`id.eq.${rootId},parent_message_id.eq.${rootId}`);
   if (error) {
     console.error('toggleCleared failed:', error);
     alert('Could not update that question. ' + (error.message || ''));
     await fetchAndRender(); // resync with the truth
   }
+}
+
+/** Reopen a resolved question when someone replies to it.
+ *
+ *  Resolved cards keep their reply box (visible under "Show cleared history"),
+ *  so a follow-up on an old question is a normal thing to do — and until now
+ *  it produced a live message under a cleared root, which the open list skips.
+ *  Reopening puts the thread back where both sides can see it.
+ *
+ *  Failure here is logged, not surfaced: the reply itself already succeeded,
+ *  and the thread stays readable under "Show cleared history" either way. */
+async function reopenIfResolved(rootId) {
+  const root = cache.find((m) => m.id === rootId);
+  if (!root || !root.cleared) return;
+  const { error } = await sb.from('messages')
+    .update({ cleared: false })
+    .or(`id.eq.${rootId},parent_message_id.eq.${rootId}`);
+  if (error) console.error('reopenIfResolved failed:', error);
 }
 
 // ---------------------------------------------------------------------
@@ -345,6 +374,7 @@ async function submitReply(rootId) {
   try {
     const atts = files.length ? await uploadAll(files) : null;
     await insertMessage({ body, parentId: rootId, atts });
+    await reopenIfResolved(rootId);
     if (ta) ta.value = '';
     clearStaged(rootId);
     await fetchAndRender();
