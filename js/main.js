@@ -292,13 +292,19 @@ async function setCurrentClient(clientId) {
 }
 
 // ---------------------------------------------------------------------
-// Client Questions nav badge — lights up when the Bald Ginger team has
-// posted a client-facing message the client hasn't responded to yet.
-// "Latest message in a thread is from the team and not cleared" = awaiting
-// the client. Internal team notes (is_internal = true) are excluded here AND
-// blocked by RLS, so they never surface to the client or trigger the badge.
-// No per-user read state: it clears when the client replies (latest flips to
-// them) or the team resolves the thread.
+// Client Questions nav badge — counts the client-facing question threads that
+// are still open (cleared = false). Internal team notes (is_internal = true)
+// are excluded here AND blocked by RLS, so they never surface to the client or
+// trigger the badge. No per-user read state: the number drops when the team
+// resolves the thread.
+//
+// The count is deliberately taken over THREAD ROOTS only (parent_message_id is
+// null), because the Client Questions page renders roots. Counting every
+// uncleared row and grouping by parent_message_id — the previous approach —
+// could invent a thread that has no visible row: a reply left at
+// cleared = false under a root that was already cleared produced a phantom key
+// in the map, so the badge read "1" over an empty page. Roots-only makes the
+// badge structurally incapable of exceeding what the page can show.
 // ---------------------------------------------------------------------
 let cqBadgeChannel = null;
 
@@ -310,21 +316,13 @@ async function loadClientQuestionsBadge() {
   try {
     const { data, error } = await sb
       .from('messages')
-      .select('id, parent_message_id, is_team, created_at, cleared')
+      .select('id')
       .eq('client_id', clientId)
       .eq('is_internal', false)
+      .is('parent_message_id', null)
       .eq('cleared', false);
     if (error) throw error;
-    const latest = new Map();  // thread root -> latest message meta
-    for (const m of (data || [])) {
-      const key = m.parent_message_id || m.id;
-      const cur = latest.get(key);
-      if (!cur || new Date(m.created_at) > new Date(cur.created_at)) {
-        latest.set(key, { created_at: m.created_at, is_team: m.is_team });
-      }
-    }
-    let count = 0;
-    latest.forEach(() => { count++; });   // any uncleared client-facing thread
+    const count = (data || []).length;   // one open, client-facing thread each
     if (count > 0) {
       badge.textContent = count > 99 ? '99+' : String(count);
       badge.style.display = 'inline-flex';
