@@ -36,17 +36,32 @@ async function renderInto(root) {
 // Map of client_id -> count of open question threads whose latest message is
 // from the client (is_team !== true). RLS limits the rows to clients the user
 // can see, so the grouping is automatically scoped correctly.
+//
+// A thread only counts while its ROOT is open. Keying purely on
+// parent_message_id, as this did before, let a reply left at cleared = false
+// under a CLEARED root invent a thread of its own — a client card lit up over
+// a question the Client Questions tab files under "Show cleared history" and
+// never lists as open. Deriving the open roots first and skipping replies that
+// don't belong to one keeps this board honest.
+//
+// is_internal = false is belt-and-braces: internal notes are always team-
+// authored, so the is_team test below already excludes them, but the portal
+// should never look at them at all.
 async function loadOpenQuestionCounts() {
   const counts = {};
   try {
     const { data, error } = await sb
       .from('messages')
       .select('id, parent_message_id, is_team, created_at, cleared, client_id')
+      .eq('is_internal', false)
       .eq('cleared', false);
     if (error) throw error;
+    const rows = data || [];
+    const openRootIds = new Set(rows.filter((m) => !m.parent_message_id).map((m) => m.id));
     const latest = new Map();  // thread root -> latest message meta
-    for (const m of (data || [])) {
+    for (const m of rows) {
       const key = m.parent_message_id || m.id;
+      if (!openRootIds.has(key)) continue;   // reply under a cleared root
       const cur = latest.get(key);
       if (!cur || new Date(m.created_at) > new Date(cur.created_at)) {
         latest.set(key, { created_at: m.created_at, is_team: m.is_team, client_id: m.client_id });
