@@ -17,7 +17,7 @@ import { sb } from './config.js';
 export async function fetchComments(fileId) {
   const { data, error } = await sb
     .from('pnl_comments')
-    .select('id, file_id, cell_ref, sheet_name, thread_id, body, author_id, is_resolved, resolved_by, resolved_at, created_at')
+    .select('id, file_id, cell_ref, sheet_name, thread_id, body, author_id, is_resolved, resolved_by, resolved_at, created_at, edited_at')
     .eq('file_id', fileId)
     .order('created_at', { ascending: true });
   if (error) throw error;
@@ -90,6 +90,21 @@ export async function setThreadResolved(rootId, isResolved, resolvedByUserId) {
     .single();
   if (error) throw error;
   return data;
+}
+
+// Edit the body of an existing comment. RLS restricts this to the author, so a
+// caller that isn't the author gets zero rows updated rather than an error —
+// hence the explicit row check.
+export async function updateComment(commentId, body) {
+  if (!body || !body.trim()) throw new Error('Empty comment');
+  const { data, error } = await sb
+    .from('pnl_comments')
+    .update({ body: body.trim(), edited_at: new Date().toISOString() })
+    .eq('id', commentId)
+    .select();
+  if (error) throw error;
+  if (!data || !data.length) throw new Error('You can only edit your own comments.');
+  return data[0];
 }
 
 // Delete a single comment. Note: the FK cascade on thread_id is NOT set up

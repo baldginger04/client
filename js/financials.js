@@ -1806,20 +1806,83 @@ function renderPdExpanded(bx, acct, notes) {
   wirePdNotes(bx, acct);
 }
 
+
+// ---------------------------------------------------------------------
+// Bare-URL auto-linking
+// ---------------------------------------------------------------------
+// Runs on ALREADY-ESCAPED text, so it can never reintroduce markup, and only
+// links http/https — a pasted "javascript:" or "data:" URI stays inert text.
+// Matches become \u0000N\u0000 tokens first so any later pass over the string
+// (e.g. @mention bolding) can't cut through the middle of a URL; the tokens are
+// swapped back for anchors at the very end.
+function linkifyEscaped(escaped) {
+  const parts = [];
+  const tokenized = String(escaped).replace(/\b(?:https?:\/\/|www\.)[^\s<>"]+/gi, (m) => {
+    let url = m, tail = '';
+    for (;;) {
+      const ent = url.match(/(&(?:amp|quot|lt|gt|#39);)$/i);
+      if (ent) { tail = ent[1] + tail; url = url.slice(0, -ent[1].length); continue; }
+      const punc = url.match(/[.,;:!?)\]}'"]$/);
+      if (punc) {
+        // A closing bracket is only sentence punctuation when it is unmatched;
+        // otherwise it belongs to the URL (".../Foo_(bar)").
+        const ch = punc[0];
+        const open = { ')': '(', ']': '[', '}': '{' }[ch];
+        if (open) {
+          const opens = url.split(open).length - 1;
+          const closes = url.split(ch).length - 1;
+          if (closes <= opens) break;
+        }
+        tail = ch + tail; url = url.slice(0, -1); continue;
+      }
+      break;
+    }
+    if (!url || url === 'www.' || /^https?:\/\/$/i.test(url)) return m;
+    const href = /^www\./i.test(url) ? 'https://' + url : url;
+    parts.push('<a href="' + href + '" target="_blank" rel="noopener noreferrer" class="msg-link">' + url + '</a>');
+    return '\u0000' + (parts.length - 1) + '\u0000' + tail;
+  });
+  return { text: tokenized, parts };
+}
+function restoreLinks(html, parts) {
+  return html.replace(/\u0000(\d+)\u0000/g, (_, i) => parts[i]);
+}
+
+// Render a note body: escape, then auto-link bare URLs.
+function pdNoteBodyHtml(text) {
+  const lk = linkifyEscaped(bsEsc(text));
+  return restoreLinks(lk.text, lk.parts);
+}
+// Which note (if any) is currently open in the inline editor.
+let pdEditingId = null;
+
 function renderPdNotes(acct, notes) {
   const resolved = notes.length && notes.every((nt) => nt.resolved);
   const msgs = notes.map((nt) => {
     const who = nt.is_team ? 'Bald Ginger' : 'Client';
     const when = nt.created_at ? new Date(nt.created_at).toLocaleDateString() : '';
+    // Editing is gated on author_id — the note's own author and nobody else.
+    const mine = !!(nt.author_id && state.userId && nt.author_id === state.userId);
+    const editLink = mine && pdEditingId !== nt.id
+      ? '<button type="button" class="pd-note-edit" data-note-id="' + bsEsc(nt.id) + '" style="border:0;background:none;color:#D85B31;font-size:11px;cursor:pointer;padding:0 0 0 8px">Edit</button>'
+      : '';
+    const edited = nt.edited_at ? '<span style="font-style:italic;margin-left:6px">(edited)</span>' : '';
+    const bodyHtml = pdEditingId === nt.id
+      ? '<textarea class="pd-note-edit-input" data-note-id="' + bsEsc(nt.id) + '" rows="3" autocorrect="on" autocapitalize="sentences" spellcheck="true" style="width:100%;border:1px solid var(--border);border-radius:7px;padding:7px 9px;font-family:inherit;font-size:13px;resize:vertical">' + bsEsc(nt.body) + '</textarea>'
+        + '<div style="display:flex;gap:8px;margin-top:6px">'
+        + '<button type="button" class="pd-note-save" data-note-id="' + bsEsc(nt.id) + '" style="border:0;background:#D85B31;color:#fff;border-radius:7px;padding:6px 12px;font-weight:700;font-size:12px;cursor:pointer">Save</button>'
+        + '<button type="button" class="pd-note-cancel" style="border:1px solid var(--border);background:var(--bg);color:var(--text2);border-radius:7px;padding:6px 12px;font-size:12px;cursor:pointer">Cancel</button>'
+        + '</div>'
+      : pdNoteBodyHtml(nt.body);
     return '<div style="padding:6px 0;border-top:1px solid #f2f2f2">'
-      + '<div style="font-size:11px;color:#999"><b style="color:' + (nt.is_team ? '#1B2A4B' : '#8a6500') + '">' + bsEsc(who) + '</b>' + (nt.author_name ? ' \u00b7 ' + bsEsc(nt.author_name) : '') + ' \u00b7 ' + when + '</div>'
-      + '<div style="font-size:13px;color:var(--text);margin-top:2px">' + bsEsc(nt.body) + '</div></div>';
+      + '<div style="font-size:11px;color:#999"><b style="color:' + (nt.is_team ? '#1B2A4B' : '#8a6500') + '">' + bsEsc(who) + '</b>' + (nt.author_name ? ' \u00b7 ' + bsEsc(nt.author_name) : '') + ' \u00b7 ' + when + edited + editLink + '</div>'
+      + '<div style="font-size:13px;color:var(--text);margin-top:2px">' + bodyHtml + '</div></div>';
   }).join('');
   return '<div class="pd-notes" style="margin-top:12px;padding:10px 12px;background:var(--warm,#f6f5ef);border-radius:8px">'
     + '<div style="font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:#888;margin-bottom:4px">Notes' + (resolved ? ' \u00b7 <span style="color:#1e7a45">Resolved</span>' : '') + '</div>'
     + (msgs || '<div style="font-size:12.5px;color:#999">No notes yet' + (state.isTeam ? '' : ' \u2014 leave a question and your bookkeeper will reply.') + '</div>')
     + '<div style="display:flex;gap:8px;align-items:flex-start;margin-top:8px">'
-    + '<textarea class="pd-note-input" rows="1" placeholder="' + (state.isTeam ? 'Reply\u2026' : 'Ask about this line\u2026') + '" style="flex:1;border:1px solid var(--border);border-radius:7px;padding:7px 9px;font-family:inherit;font-size:13px;resize:vertical"></textarea>'
+    + '<textarea class="pd-note-input" rows="1" autocorrect="on" autocapitalize="sentences" spellcheck="true" placeholder="' + (state.isTeam ? 'Reply\u2026' : 'Ask about this line\u2026') + '" style="flex:1;border:1px solid var(--border);border-radius:7px;padding:7px 9px;font-family:inherit;font-size:13px;resize:vertical"></textarea>'
     + '<button type="button" class="pd-note-add" style="border:0;background:#D85B31;color:#fff;border-radius:7px;padding:8px 14px;font-weight:700;font-size:12.5px;cursor:pointer">Post</button>'
     + (state.isTeam && notes.length && !resolved ? '<button type="button" class="pd-note-resolve" style="border:1px solid var(--border);background:var(--bg);color:var(--text2);border-radius:7px;padding:8px 12px;font-size:12.5px;cursor:pointer">Resolve</button>' : '')
     + '</div><div class="pd-note-msg" style="font-size:12px;margin-top:4px"></div></div>';
@@ -1848,6 +1911,42 @@ function wirePdNotes(bx, acct) {
       addBtn.disabled = false;
     }
   });
+  // Inline edit: open, cancel, save. Each redraws the notes block in place, the
+  // same way Post and Resolve already do.
+  const redraw = async () => {
+    const notes = (await loadNotesByKey())[key] || [];
+    bx.innerHTML = bx.innerHTML.split('<div class="pd-notes"')[0] + renderPdNotes(acct, notes);
+    wirePdNotes(bx, acct);
+  };
+  bx.querySelectorAll('.pd-note-edit').forEach((b) => b.addEventListener('click', async () => {
+    pdEditingId = b.dataset.noteId;
+    await redraw();
+    const ta = bx.querySelector('.pd-note-edit-input');
+    if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  }));
+  bx.querySelectorAll('.pd-note-cancel').forEach((b) => b.addEventListener('click', async () => {
+    pdEditingId = null;
+    await redraw();
+  }));
+  bx.querySelectorAll('.pd-note-save').forEach((b) => b.addEventListener('click', async () => {
+    const ta = bx.querySelector('.pd-note-edit-input[data-note-id="' + b.dataset.noteId + '"]');
+    if (!ta) return;
+    const text = (ta.value || '').trim();
+    if (!text) { if (msg) { msg.textContent = 'A note cannot be emptied by editing.'; msg.style.color = '#b93232'; } return; }
+    b.disabled = true;
+    try {
+      const { error } = await sb.from('pnl_detail_notes')
+        .update({ body: text, edited_at: new Date().toISOString() })
+        .eq('id', b.dataset.noteId);
+      if (error) throw error;
+      pdEditingId = null;
+      await redraw();
+    } catch (e) {
+      if (msg) { msg.textContent = 'Error: ' + (e.message || e); msg.style.color = '#b93232'; }
+      b.disabled = false;
+    }
+  }));
+
   const resBtn = bx.querySelector('.pd-note-resolve');
   if (resBtn) resBtn.addEventListener('click', async () => {
     resBtn.disabled = true;

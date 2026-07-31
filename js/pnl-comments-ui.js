@@ -10,7 +10,7 @@
 // the "sjs-" prefix to get the cell ref. Multi-tab files: sheet_name lives
 // on the active tab button (data-sheet attr).
 // =====================================================================
-import { fetchComments, groupIntoThreads, postComment, setThreadResolved, deleteComment } from './pnl-comments.js';
+import { fetchComments, groupIntoThreads, postComment, setThreadResolved, deleteComment, updateComment } from './pnl-comments.js';
 
 // Module-level state for the currently-active commenting session.
 // Cleared on unmount or when a different file preview opens.
@@ -291,7 +291,7 @@ function renderPopoverHtml(cellRef, threads) {
       ${threadsHtml}
     </div>
     <div class="pnl-popover-new">
-      <textarea class="pnl-popover-input" data-role="new-root" placeholder="Start a new thread on ${escapeHtml(cellRef)}…" rows="2"></textarea>
+      <textarea class="pnl-popover-input" data-role="new-root" placeholder="Start a new thread on ${escapeHtml(cellRef)}…" rows="2" autocorrect="on" autocapitalize="sentences" spellcheck="true"></textarea>
       <button class="btn btn-primary btn-sm" data-action="post-root">Post</button>
     </div>`;
 }
@@ -306,17 +306,35 @@ function renderThreadHtml(thread) {
   // both get this. Deleting the root orphans its replies (intentional — we
   // could cascade later, but for now this matches the data layer).
   const myId = session?.currentUser?.id;
-  const deleteBtn = (c) => c.author_id === myId
+  const isMine = (c) => !!(c.author_id && myId && c.author_id === myId);
+  const deleteBtn = (c) => isMine(c)
     ? `<button class="pnl-comment-delete" data-action="delete-comment" data-comment-id="${c.id}" title="Delete">×</button>`
     : '';
+  const editBtn = (c) => isMine(c) && editingCommentId !== c.id
+    ? `<button class="pnl-comment-edit" data-action="edit-comment" data-comment-id="${c.id}" title="Edit">Edit</button>`
+    : '';
+  const editedTag = (c) => c.edited_at ? `<span class="pnl-comment-edited">(edited)</span>` : '';
+  // Body slot: the rendered comment, or the inline editor when this one is open.
+  const bodySlot = (c) => editingCommentId === c.id
+    ? `<div class="pnl-comment-body">
+         <textarea class="pnl-comment-edit-input" data-comment-id="${c.id}" rows="3"
+                   autocorrect="on" autocapitalize="sentences" spellcheck="true">${escapeHtml(c.body)}</textarea>
+         <div class="pnl-comment-edit-actions">
+           <button class="btn btn-primary btn-sm" data-action="save-edit" data-comment-id="${c.id}">Save</button>
+           <button class="btn btn-ghost btn-sm" data-action="cancel-edit">Cancel</button>
+         </div>
+       </div>`
+    : `<div class="pnl-comment-body">${commentBodyHtml(c.body)}</div>`;
   const repliesHtml = thread.replies.map((r) => `
     <div class="pnl-comment pnl-comment-reply">
       <div class="pnl-comment-meta">
         <span class="pnl-comment-author">${escapeHtml(r.author?.full_name || r.author?.email || 'Unknown')}</span>
         <span class="pnl-comment-time">${formatTime(r.created_at)}</span>
+        ${editedTag(r)}
+        ${editBtn(r)}
         ${deleteBtn(r)}
       </div>
-      <div class="pnl-comment-body">${escapeHtml(r.body)}</div>
+      ${bodySlot(r)}
     </div>
   `).join('');
 
@@ -328,13 +346,15 @@ function renderThreadHtml(thread) {
           <span class="pnl-comment-author">${escapeHtml(t.author?.full_name || t.author?.email || 'Unknown')}</span>
           <span class="pnl-comment-time">${formatTime(t.created_at)}</span>
           ${resolvedTag}
+          ${editedTag(t)}
+          ${editBtn(t)}
           ${deleteBtn(t)}
         </div>
-        <div class="pnl-comment-body">${escapeHtml(t.body)}</div>
+        ${bodySlot(t)}
       </div>
       ${repliesHtml}
       <div class="pnl-thread-actions">
-        <textarea class="pnl-popover-input" data-role="reply" data-thread-id="${t.id}" placeholder="Reply…" rows="1"></textarea>
+        <textarea class="pnl-popover-input" data-role="reply" data-thread-id="${t.id}" placeholder="Reply…" rows="1" autocorrect="on" autocapitalize="sentences" spellcheck="true"></textarea>
         <div class="pnl-thread-actions-row">
           <button class="btn btn-ghost btn-sm" data-action="post-reply" data-thread-id="${t.id}">Reply</button>
           <button class="btn btn-ghost btn-sm" data-action="${t.is_resolved ? 'unresolve' : 'resolve'}" data-thread-id="${t.id}">
@@ -413,6 +433,42 @@ function bindPopoverEvents(pop, cellRef) {
       }
     }
 
+    if (action === 'edit-comment') {
+      editingCommentId = btn.dataset.commentId;
+      const td = session.host.querySelector(`td[id="sjs-${cssEscape(cellRef)}"]`);
+      if (td) openPopoverForCell(td, cellRef);
+      const ta = document.querySelector(`.pnl-comment-edit-input[data-comment-id="${cssEscape(editingCommentId)}"]`);
+      if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+      return;
+    }
+
+    if (action === 'cancel-edit') {
+      editingCommentId = null;
+      const td = session.host.querySelector(`td[id="sjs-${cssEscape(cellRef)}"]`);
+      if (td) openPopoverForCell(td, cellRef);
+      return;
+    }
+
+    if (action === 'save-edit') {
+      const commentId = btn.dataset.commentId;
+      const ta = pop.querySelector(`.pnl-comment-edit-input[data-comment-id="${cssEscape(commentId)}"]`);
+      if (!ta) return;
+      const body = ta.value.trim();
+      if (!body) { alert('A comment cannot be emptied by editing. Delete it instead.'); return; }
+      btn.disabled = true;
+      try {
+        await updateComment(commentId, body);
+        editingCommentId = null;
+        await reloadComments();
+        const td = session.host.querySelector(`td[id="sjs-${cssEscape(cellRef)}"]`);
+        if (td) openPopoverForCell(td, cellRef);
+      } catch (err) {
+        alert("Couldn't save your edit: " + (err.message || err));
+        btn.disabled = false;
+      }
+      return;
+    }
+
     if (action === 'delete-comment') {
       const commentId = btn.dataset.commentId;
       // Find whether this is a root with replies — warn if it'd orphan them.
@@ -464,7 +520,7 @@ function renderSidebar() {
         <div class="pnl-sidebar-thread-num">#${num}</div>
         <div class="pnl-sidebar-thread-content">
           <div class="pnl-sidebar-thread-cell">${escapeHtml(cellLabel)}</div>
-          <div class="pnl-sidebar-thread-body">${escapeHtml(t.body)}</div>
+          <div class="pnl-sidebar-thread-body">${commentBodyHtml(t.body)}</div>
           <div class="pnl-sidebar-thread-meta">
             ${escapeHtml(t.author?.full_name || 'Unknown')}
             ${replyCount > 0 ? ` · ${replyCount} repl${replyCount === 1 ? 'y' : 'ies'}` : ''}
@@ -499,6 +555,56 @@ function renderSidebar() {
 // ---------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------
+
+// ---------------------------------------------------------------------
+// Bare-URL auto-linking
+// ---------------------------------------------------------------------
+// Runs on ALREADY-ESCAPED text, so it can never reintroduce markup, and only
+// links http/https — a pasted "javascript:" or "data:" URI stays inert text.
+// Matches become \u0000N\u0000 tokens first so any later pass over the string
+// (e.g. @mention bolding) can't cut through the middle of a URL; the tokens are
+// swapped back for anchors at the very end.
+function linkifyEscaped(escaped) {
+  const parts = [];
+  const tokenized = String(escaped).replace(/\b(?:https?:\/\/|www\.)[^\s<>"]+/gi, (m) => {
+    let url = m, tail = '';
+    for (;;) {
+      const ent = url.match(/(&(?:amp|quot|lt|gt|#39);)$/i);
+      if (ent) { tail = ent[1] + tail; url = url.slice(0, -ent[1].length); continue; }
+      const punc = url.match(/[.,;:!?)\]}'"]$/);
+      if (punc) {
+        // A closing bracket is only sentence punctuation when it is unmatched;
+        // otherwise it belongs to the URL (".../Foo_(bar)").
+        const ch = punc[0];
+        const open = { ')': '(', ']': '[', '}': '{' }[ch];
+        if (open) {
+          const opens = url.split(open).length - 1;
+          const closes = url.split(ch).length - 1;
+          if (closes <= opens) break;
+        }
+        tail = ch + tail; url = url.slice(0, -1); continue;
+      }
+      break;
+    }
+    if (!url || url === 'www.' || /^https?:\/\/$/i.test(url)) return m;
+    const href = /^www\./i.test(url) ? 'https://' + url : url;
+    parts.push('<a href="' + href + '" target="_blank" rel="noopener noreferrer" class="msg-link">' + url + '</a>');
+    return '\u0000' + (parts.length - 1) + '\u0000' + tail;
+  });
+  return { text: tokenized, parts };
+}
+function restoreLinks(html, parts) {
+  return html.replace(/\u0000(\d+)\u0000/g, (_, i) => parts[i]);
+}
+
+// Render a comment body: escape, then auto-link bare URLs.
+function commentBodyHtml(text) {
+  const lk = linkifyEscaped(escapeHtml(text));
+  return restoreLinks(lk.text, lk.parts);
+}
+// Which comment (if any) is currently open in the inline editor.
+let editingCommentId = null;
+
 function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

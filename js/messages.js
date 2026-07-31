@@ -36,6 +36,10 @@ let bound = false;
 const ctx = { clientId: null, userId: null, author: 'Unknown', isTeam: false };
 
 let showResolved = false;
+// Inline edit state. editingId survives a re-render (realtime can fire mid-edit),
+// and editDraft holds what has been typed so an incoming refresh doesn't wipe it.
+let editingId = null;
+let editDraft = null;
 let cache = [];            // every message for the client (roots + replies)
 const staged = new Map();  // 'new' | rootId  ->  File (an attachment awaiting send)
 
@@ -55,15 +59,59 @@ async function loadMentionUsers() {
 function escRe(x){ return String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function mInitials(n){ return String(n||'').trim().split(/\s+/).map(w=>w[0]||'').join('').substring(0,2).toUpperCase(); }
 
-// esc() (HTML-escape) is defined below and hoisted. Bold each @Name, drop the "@".
+
+// ---------------------------------------------------------------------
+// Bare-URL auto-linking
+// ---------------------------------------------------------------------
+// Runs on ALREADY-ESCAPED text, so it can never reintroduce markup, and only
+// links http/https — a pasted "javascript:" or "data:" URI stays inert text.
+// Matches become \u0000N\u0000 tokens first so any later pass over the string
+// (e.g. @mention bolding) can't cut through the middle of a URL; the tokens are
+// swapped back for anchors at the very end.
+function linkifyEscaped(escaped) {
+  const parts = [];
+  const tokenized = String(escaped).replace(/\b(?:https?:\/\/|www\.)[^\s<>"]+/gi, (m) => {
+    let url = m, tail = '';
+    for (;;) {
+      const ent = url.match(/(&(?:amp|quot|lt|gt|#39);)$/i);
+      if (ent) { tail = ent[1] + tail; url = url.slice(0, -ent[1].length); continue; }
+      const punc = url.match(/[.,;:!?)\]}'"]$/);
+      if (punc) {
+        // A closing bracket is only sentence punctuation when it is unmatched;
+        // otherwise it belongs to the URL (".../Foo_(bar)").
+        const ch = punc[0];
+        const open = { ')': '(', ']': '[', '}': '{' }[ch];
+        if (open) {
+          const opens = url.split(open).length - 1;
+          const closes = url.split(ch).length - 1;
+          if (closes <= opens) break;
+        }
+        tail = ch + tail; url = url.slice(0, -1); continue;
+      }
+      break;
+    }
+    if (!url || url === 'www.' || /^https?:\/\/$/i.test(url)) return m;
+    const href = /^www\./i.test(url) ? 'https://' + url : url;
+    parts.push('<a href="' + href + '" target="_blank" rel="noopener noreferrer" class="msg-link">' + url + '</a>');
+    return '\u0000' + (parts.length - 1) + '\u0000' + tail;
+  });
+  return { text: tokenized, parts };
+}
+function restoreLinks(html, parts) {
+  return html.replace(/\u0000(\d+)\u0000/g, (_, i) => parts[i]);
+}
+
+// esc() (HTML-escape) is defined below and hoisted. Bold each @Name, drop the "@",
+// and turn bare URLs into links.
 function mentionHtml(text) {
-  let html = esc(text || '');
+  const lk = linkifyEscaped(esc(text || ''));
+  let html = lk.text;
   const users = [...mentionUsers].sort((a, b) => b.name.length - a.name.length);
   for (const u of users) {
     const re = new RegExp('@' + escRe(esc(u.name)) + '(?![\\w])', 'giu');
     html = html.replace(re, '<span class="mention">' + esc(u.name) + '</span>');
   }
-  return html;
+  return restoreLinks(html, lk.parts);
 }
 
 let mDD = null, mCtx = null;
@@ -140,6 +188,11 @@ function injectMentionCSS(){
   const st = document.createElement('style');
   st.id = 'mention-css';
   st.textContent = '.mention{font-weight:600;color:#D85B31}'
+    + '.msg-link{color:#D85B31;text-decoration:underline;overflow-wrap:anywhere}'
+    + '.qc-edit{flex-shrink:0;white-space:nowrap}'
+    + '.msg-edited{font-size:11px;color:#8b8f98;margin-left:6px;font-style:italic}'
+    + '.qc-edit-input{width:100%;border:1px solid #d0d4da;border-radius:7px;padding:8px 10px;font-family:inherit;font-size:13px;line-height:1.5;resize:vertical}'
+    + '.qc-edit-actions{display:flex;gap:8px;margin-top:6px}'
     + '.mention-dd{position:absolute;z-index:9999;background:#fff;border:1px solid #d0d4da;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);padding:4px;max-height:240px;overflow-y:auto}'
     + '.mention-opt{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;font-size:13px;color:#1a1c1e;cursor:pointer;white-space:nowrap}'
     + '.mention-opt.sel{background:#f1f0e9}'
@@ -205,7 +258,11 @@ function bindOnce() {
   if (list) {
     list.addEventListener('click', onListClick);
     list.addEventListener('change', onListChange);
-    list.addEventListener('input', (e) => { if (e.target.classList && e.target.classList.contains('qc-reply-input')) onMentionInput(e); });
+    list.addEventListener('input', (e) => {
+      if (e.target.classList && e.target.classList.contains('qc-reply-input')) onMentionInput(e);
+      // Keep the draft so a realtime refresh mid-edit doesn't discard typing.
+      if (e.target.classList && e.target.classList.contains('qc-edit-input')) editDraft = e.target.value;
+    });
     list.addEventListener('keydown', (e) => { if (e.target.classList && e.target.classList.contains('qc-reply-input')) mKeydown(e); });
   }
 }
@@ -227,6 +284,14 @@ function onListClick(e) {
 
   const replyBtn = e.target.closest('.qc-reply-send');
   if (replyBtn) { submitReply(replyBtn.dataset.rootId); return; }
+
+  const editBtnEl = e.target.closest('.qc-edit');
+  if (editBtnEl) { beginEdit(editBtnEl.dataset.id); return; }
+
+  const saveBtn = e.target.closest('.qc-edit-save');
+  if (saveBtn) { saveEdit(saveBtn.dataset.id); return; }
+
+  if (e.target.closest('.qc-edit-cancel')) { cancelEdit(); return; }
 }
 
 function onListChange(e) {
@@ -267,6 +332,7 @@ async function insertMessage({ body, parentId, atts }) {
   const row = {
     client_id: ctx.clientId,
     author: ctx.author,
+    author_id: ctx.userId || null,
     body: body || '',
     is_team: ctx.isTeam,
     parent_message_id: parentId,
@@ -499,6 +565,66 @@ function render() {
   }
 }
 
+// ---------------------------------------------------------------------
+// Editing your own post
+// ---------------------------------------------------------------------
+// Ownership is author_id and ONLY author_id. Rows written before that column
+// existed carry null and are not editable here. There is deliberately no
+// display-name fallback: in the portal, client users share a screen with each
+// other's messages, and a name string is not something RLS can verify.
+function canEdit(m) {
+  return !!(m && m.author_id && ctx.userId && m.author_id === ctx.userId);
+}
+function editedTag(m) {
+  return m.edited_at ? '<span class="msg-edited" title="Edited">(edited)</span>' : '';
+}
+function editBtn(m) {
+  return canEdit(m)
+    ? `<button type="button" class="btn btn-ghost btn-sm qc-edit" data-id="${esc(m.id)}">Edit</button>`
+    : '';
+}
+/** The body slot: either the rendered message, or the edit box when active. */
+function bodySlot(m) {
+  if (editingId !== m.id) {
+    return `<div class="msg-body">${mentionHtml(m.body || '')}${attachmentSlot(m)}</div>`;
+  }
+  const draft = editDraft == null ? (m.body || '') : editDraft;
+  return `<div class="msg-body">
+      <textarea class="qc-edit-input" data-id="${esc(m.id)}" rows="3"
+                autocorrect="on" autocapitalize="sentences" spellcheck="true">${esc(draft)}</textarea>
+      <div class="qc-edit-actions">
+        <button type="button" class="btn btn-primary btn-sm qc-edit-save" data-id="${esc(m.id)}">Save</button>
+        <button type="button" class="btn btn-ghost btn-sm qc-edit-cancel">Cancel</button>
+      </div>
+    </div>`;
+}
+function beginEdit(id) {
+  editingId = id;
+  editDraft = null;
+  render();
+  const ta = document.querySelector(`.qc-edit-input[data-id="${cssEsc(id)}"]`);
+  if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
+function cancelEdit() {
+  editingId = null;
+  editDraft = null;
+  render();
+}
+async function saveEdit(id) {
+  const ta = document.querySelector(`.qc-edit-input[data-id="${cssEsc(id)}"]`);
+  if (!ta) return;
+  const body = ta.value.trim();
+  if (!body) { alert('A message cannot be emptied by editing. Clear the thread instead.'); return; }
+  const { error } = await sb.from('messages')
+    .update({ body, edited_at: new Date().toISOString() })
+    .eq('id', id);
+  if (error) { alert("Couldn't save your edit — " + error.message); return; }
+  editingId = null;
+  editDraft = null;
+  // No notification on an edit: the people who needed to see this already did.
+  await fetchAndRender();
+}
+
 function groupReplies(all) {
   const map = {};
   all.forEach((m) => {
@@ -529,19 +655,22 @@ function renderCard(root, replies) {
           ${teamBadge}
           ${resolvedBadge}
           <span class="msg-time">${formatTime(root.created_at)}</span>
+          ${editedTag(root)}
         </div>
+        ${editBtn(root)}
         <button type="button" class="btn btn-ghost btn-sm qc-clear"
                 data-root-id="${esc(root.id)}" data-to="${clearTo}">${clearLabel}</button>
       </div>
 
-      <div class="msg-body">${mentionHtml(root.body || '')}${attachmentSlot(root)}</div>
+      ${bodySlot(root)}
 
       ${repliesHtml ? `<div class="qcard-replies">${repliesHtml}</div>` : ''}
 
       <div class="qcard-foot">
         <div class="qc-reply">
           <textarea class="qc-reply-input" data-root-id="${esc(root.id)}" rows="1"
-                    placeholder="Write a reply…"></textarea>
+                    placeholder="Write a reply…"
+                    autocorrect="on" autocapitalize="sentences" spellcheck="true"></textarea>
           <div class="qc-reply-actions">
             <button type="button" class="attach-btn qc-attach" data-card="${esc(root.id)}"
                     title="Attach a file">📎</button>
@@ -567,8 +696,10 @@ function renderReply(r) {
         <span class="msg-author">${esc(author)}</span>
         ${teamBadge}
         <span class="msg-time">${formatTime(r.created_at)}</span>
+        ${editedTag(r)}
+        ${editBtn(r)}
       </div>
-      <div class="msg-body">${mentionHtml(r.body || '')}${attachmentSlot(r)}</div>
+      ${bodySlot(r)}
     </div>
   `;
 }
