@@ -226,6 +226,7 @@ function actualsCard(dates, byDateA, prof, projF, projL) {
     </div>
     <div class="pj-avar" id="pjAVar"></div>
     <div class="pj-save"><button class="pj-btn" id="pjSaveActual">Save actuals</button>
+      <button class="pj-ghost" id="pjPullActual" title="Pull this week's actual sales from QuickBooks">↺ Pull from QuickBooks</button>
       <span class="pj-note" id="pjActualMsg"></span></div>
   </div>`;
 }
@@ -245,6 +246,8 @@ function wireActuals(el, dates, prof, projF, projL) {
   ['#pjAFood', '#pjALbw'].forEach((s) => { const i = el.querySelector(s); if (i) i.addEventListener('input', compute); });
   compute();
   el.querySelector('#pjSaveActual').addEventListener('click', () => saveActuals(el, dates, prof));
+  const pullA = el.querySelector('#pjPullActual');
+  if (pullA) pullA.addEventListener('click', () => pullActualsFromQbo(el, projF, projL));
 }
 
 async function saveActuals(el, dates, prof) {
@@ -262,6 +265,108 @@ async function saveActuals(el, dates, prof) {
     setMsg('Saved.', false);
   } catch (e) { setMsg('Error: ' + e.message, true); }
   finally { btn.disabled = false; btn.textContent = orig; }
+}
+
+async function pullActualsFromQbo(el, projF, projL) {
+  const body = el.querySelector('#pjSalesBody');
+  if (!body) return;
+  if (store.week.getTime() > mondayOf(new Date()).getTime()) {
+    pullNotice(el, "This week hasn't started yet \u2014 there are no actual sales to pull.");
+    return;
+  }
+  body.innerHTML = `<div class="pj-loading">Pulling this week's actual sales from QuickBooks\u2026</div>`;
+  try {
+    const { data, error } = await sb.functions.invoke('qbo-actuals', { body: { client_id: ctx.clientId, week_start: ymd(store.week) } });
+    if (error) throw new Error(error.message || 'request failed');
+    if (data && data.error === 'not_connected') { pullNotice(el, "QuickBooks isn't connected for this client. Connect it under Month-end review first."); return; }
+    if (data && data.error === 'reauth_needed') { pullNotice(el, 'QuickBooks needs to be reconnected \u2014 do it under Month-end review, then try again.'); return; }
+    if (!data || !data.ok) throw new Error((data && (data.message || data.error)) || 'no result');
+    renderActualsReview(el, data, projF, projL);
+  } catch (e) {
+    body.innerHTML = `<div class="pj-err">Couldn't pull actuals from QuickBooks: ${esc(e.message)}</div>`;
+    const b = document.createElement('button'); b.className = 'pj-ghost'; b.textContent = 'Back'; b.style.marginTop = '12px';
+    b.addEventListener('click', () => renderSales(el)); body.appendChild(b);
+  }
+}
+
+function renderActualsReview(el, data, projF, projL) {
+  const body = el.querySelector('#pjSalesBody');
+  const prof = store.profile;
+  const lbw = tracksLbw(prof);
+  const days = (data.days || []).filter((d) => d && d.date);
+  const weekFood = days.reduce((s, d) => s + num(d.food), 0);
+  const weekLbw = lbw ? days.reduce((s, d) => s + num(d.lbw), 0) : 0;
+
+  if (!days.length || (!weekFood && !weekLbw)) {
+    pullNotice(el, "QuickBooks has no sales posted for this week. If this client's sales are booked in one month-end entry rather than daily, actuals can't be pulled by week \u2014 enter them by hand instead.");
+    return;
+  }
+
+  const partial = days.length < 7;
+  const lastDate = new Date(days[days.length - 1].date + 'T00:00:00');
+  const throughLabel = lastDate.toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' });
+
+  const dayRows = days.map((d) => {
+    const dt = new Date(d.date + 'T00:00:00');
+    const i = (dt.getDay() + 6) % 7;
+    return `
+    <div class="pj-qrow">
+      <div class="pj-qd">${DOW[i]}<span>${dt.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}</span></div>
+      <div class="pj-qv"><b>${money(d.food)}</b><span>food</span></div>
+      ${lbw ? `<div class="pj-qv"><b>${money(d.lbw)}</b><span>lbw</span></div>` : ''}
+    </div>`;
+  }).join('');
+
+  const a = weekFood + weekLbw, p = num(projF) + (lbw ? num(projL) : 0);
+  const diff = a - p, pct = p ? (diff / p * 100) : 0, ahead = diff >= 0;
+  const varLine = (!partial && p)
+    ? `<div class="pj-avar">Actual <b>${money(a)}</b> vs projected ${money(p)} \u2014 <span class="${ahead ? 'up' : 'down'}">${ahead ? '+' : '\u2212'}${money(Math.abs(diff))} (${ahead ? '+' : '\u2212'}${Math.abs(pct).toFixed(1)}%)</span></div>`
+    : '';
+
+  body.innerHTML = `
+    <div class="pj-qbo">
+      <div class="pj-qhead">Actual sales from QuickBooks<span>${weekdayRange(store.week)}</span></div>
+      ${partial ? `<div class="pj-qfactors">
+        <span class="pj-qchip">Partial week</span>
+        <em>posted through ${esc(throughLabel)} \u2014 only these days will be saved</em>
+      </div>` : ''}
+      <div class="pj-qdays">${dayRows}</div>
+      <div class="pj-sum">
+        <div><span>Week food</span><b>${money(weekFood)}</b></div>
+        ${lbw ? `<div><span>Week LBW</span><b>${money(weekLbw)}</b></div>` : ''}
+        <div><span>Week total</span><b>${money(weekFood + weekLbw)}</b></div>
+      </div>
+      ${varLine}
+      <div class="pj-save">
+        <button class="pj-btn" id="pjASave">Save actuals</button>
+        <button class="pj-ghost" id="pjACancel">Cancel</button>
+        <span class="pj-note" id="pjAMsg"></span>
+      </div>
+      <div class="pj-acc">Food from: ${(data.foodAccounts || []).map((x) => esc(x)).join(' \u00b7 ') || '\u2014'}${lbw ? `<br>LBW from: ${(data.lbwAccounts || []).map((x) => esc(x)).join(' \u00b7 ') || '\u2014'}` : ''}</div>
+    </div>`;
+  body.querySelector('#pjACancel').addEventListener('click', () => renderSales(el));
+  body.querySelector('#pjASave').addEventListener('click', () => saveQboActuals(el, days));
+}
+
+async function saveQboActuals(el, days) {
+  const btn = el.querySelector('#pjASave'), msg = el.querySelector('#pjAMsg');
+  const setMsg = (t, bad) => { if (msg) { msg.textContent = t; msg.style.color = bad ? 'var(--red)' : 'var(--green)'; } };
+  const lbw = tracksLbw(store.profile);
+  const out = days.map((d) => ({
+    client_id: ctx.clientId, sales_date: d.date, covers: null,
+    food_revenue: num(d.food), lbw_revenue: lbw ? num(d.lbw) : 0,
+    entered_by: ctx.userId, entered_at: new Date().toISOString(),
+  }));
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Saving\u2026'; setMsg('', false);
+  try {
+    const r = await sb.from('projection_actuals').upsert(out, { onConflict: 'client_id,sales_date' });
+    if (r.error) throw r.error;
+    setMsg('Saved.', false);
+    setTimeout(() => renderSales(el), 500);
+  } catch (e) {
+    setMsg('Error: ' + e.message, true);
+    btn.disabled = false; btn.textContent = orig;
+  }
 }
 
 function tracksLbw(prof) { return (prof.categories || []).includes('lbw'); }
