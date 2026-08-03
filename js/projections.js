@@ -203,10 +203,12 @@ async function renderSales(el) {
   if (method === 'revenue_weekly') formHtml = revenueWeeklyForm(dates, byDate, prof);
   else if (method === 'covers_weekly') formHtml = coversWeeklyForm(dates, byDate, prof);
   else formHtml = coversDailyForm(dates, byDate, prof);
-  body.innerHTML = formHtml + actualsCard(dates, byDateA, prof, projF, projL);
+  body.innerHTML = formHtml + actualsCard(dates, byDateA, prof, projF, projL)
+    + `<div id="pjMonthGlance"><div class="pj-loading">Loading the month\u2026</div></div>`;
   const goals = currentGoals();
   wireSales(el, method, dates, prof, goals);
   wireActuals(el, dates, prof, projF, projL);
+  renderMonthGlance(el, prof);
 }
 
 function actualsCard(dates, byDateA, prof, projF, projL) {
@@ -298,7 +300,11 @@ function renderActualsReview(el, data, projF, projL) {
   const weekLbw = lbw ? days.reduce((s, d) => s + num(d.lbw), 0) : 0;
 
   if (!days.length || (!weekFood && !weekLbw)) {
-    pullNotice(el, "QuickBooks has no sales posted for this week. If this client's sales are booked in one month-end entry rather than daily, actuals can't be pulled by week \u2014 enter them by hand instead.");
+    if (data.hadActivity && data.mapped === false) {
+      pullNotice(el, "QuickBooks posted activity for this week, but none of it is mapped to food or LBW sales. Check this client's COA mappings \u2014 nothing points at food_sales, liquor_sales, beer_sales or wine_sales.");
+    } else {
+      pullNotice(el, "QuickBooks has no sales posted for this week. If this client's sales are booked in one month-end entry rather than daily, actuals can't be pulled by week \u2014 enter them by hand instead.");
+    }
     return;
   }
 
@@ -367,6 +373,186 @@ async function saveQboActuals(el, days) {
     setMsg('Error: ' + e.message, true);
     btn.disabled = false; btn.textContent = orig;
   }
+}
+
+/* -------------------------------------------------------------------
+   MONTH AT A GLANCE
+   Every Mon\u2013Sun week of the month (a week belongs to the month its
+   MONDAY falls in \u2014 the same convention the receiving logs use), with
+   projected vs actual sales, then budget vs spend per category. The
+   budget base is the week's ACTUAL sales once they exist, and the
+   projection until then.
+   ------------------------------------------------------------------- */
+
+function weeksOfMonth(monthStart) {
+  const out = [];
+  let m = mondayOf(monthStart);
+  if (m.getMonth() !== monthStart.getMonth()) m = addDays(m, 7);
+  while (m.getMonth() === monthStart.getMonth() && m.getFullYear() === monthStart.getFullYear()) {
+    out.push(new Date(m));
+    m = addDays(m, 7);
+  }
+  return out;
+}
+
+function weekSpan(mon) {
+  const end = addDays(mon, 6);
+  const o = { month: 'numeric', day: 'numeric' };
+  return `${mon.toLocaleDateString('en-US', o)}\u2013${end.toLocaleDateString('en-US', o)}`;
+}
+
+function varCell(a, p) {
+  if (!a) return `<div class="pj-mgv"><span class="pj-mgdash">\u2014</span></div>`;
+  if (!p) return `<div class="pj-mgv"><span class="pj-mgdash">no projection</span></div>`;
+  const d = a - p, pct = (d / p) * 100, up = d >= 0;
+  return `<div class="pj-mgv"><b class="${up ? 'up' : 'down'}">${up ? '+' : '\u2212'}${money(Math.abs(d))}</b><span>${up ? '+' : '\u2212'}${Math.abs(pct).toFixed(1)}%</span></div>`;
+}
+
+async function renderMonthGlance(el, prof) {
+  const box = el.querySelector('#pjMonthGlance');
+  if (!box) return;
+  const monthStart = firstOfMonthDate(store.week);
+  const weeks = weeksOfMonth(monthStart);
+  if (!weeks.length) { box.innerHTML = ''; return; }
+
+  const from = ymd(weeks[0]), to = ymd(addDays(weeks[weeks.length - 1], 6));
+  const lbw = tracksLbw(prof);
+
+  let proj = [], acts = [], log = [];
+  try {
+    const [rp, ra, rl] = await Promise.all([
+      sb.from('projection_sales').select('sales_date,food_revenue,lbw_revenue')
+        .eq('client_id', ctx.clientId).gte('sales_date', from).lte('sales_date', to),
+      sb.from('projection_actuals').select('sales_date,food_revenue,lbw_revenue')
+        .eq('client_id', ctx.clientId).gte('sales_date', from).lte('sales_date', to),
+      sb.from('receiving_log').select('receiving_date,category,amount')
+        .eq('client_id', ctx.clientId).gte('receiving_date', from).lte('receiving_date', to),
+    ]);
+    if (rp.error) throw rp.error;
+    if (ra.error) throw ra.error;
+    if (rl.error) throw rl.error;
+    proj = rp.data || []; acts = ra.data || []; log = rl.data || [];
+  } catch (e) {
+    box.innerHTML = `<div class="pj-err">Couldn't load the month: ${esc(e.message)}</div>`;
+    return;
+  }
+
+  // Day-number arithmetic, not milliseconds: a Central-time DST change makes a
+  // week 167 or 169 hours long, and a ms-based bucket would file the Monday
+  // after the switch into the previous week.
+  const dayNum = (d) => Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+  const startDay = dayNum(weeks[0]);
+  const idxOf = (dateStr) => {
+    const i = Math.floor((dayNum(new Date(dateStr + 'T00:00:00')) - startDay) / 7);
+    return (i >= 0 && i < weeks.length) ? i : -1;
+  };
+
+  const W = weeks.map(() => ({
+    pf: 0, pl: 0, af: 0, al: 0, spent: { food: 0, lbw: 0, supplies: 0 },
+  }));
+  proj.forEach((r) => { const i = idxOf(r.sales_date); if (i >= 0) { W[i].pf += num(r.food_revenue); W[i].pl += num(r.lbw_revenue); } });
+  acts.forEach((r) => { const i = idxOf(r.sales_date); if (i >= 0) { W[i].af += num(r.food_revenue); W[i].al += num(r.lbw_revenue); } });
+  log.forEach((r) => { const i = idxOf(r.receiving_date); if (i >= 0 && W[i].spent[r.category] != null) W[i].spent[r.category] += num(r.amount); });
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const isCurrentMonth = monthStart.getFullYear() === today.getFullYear() && monthStart.getMonth() === today.getMonth();
+  const started = weeks.map((m) => m.getTime() <= today.getTime());
+  const inProgress = weeks.map((m) => m.getTime() <= today.getTime() && addDays(m, 6).getTime() >= today.getTime());
+  const counted = weeks.map((_, i) => (isCurrentMonth ? started[i] : true));
+  const totalLabel = isCurrentMonth ? 'Month to date' : monthName(monthStart);
+
+  // ---- sales: projected vs actual
+  const sub = (f, l) => (lbw ? `<span>food ${money(f)} \u00b7 lbw ${money(l)}</span>` : '');
+  const salesRows = weeks.map((m, i) => {
+    const w = W[i];
+    const p = w.pf + w.pl, a = w.af + w.al;
+    return `
+    <div class="pj-mgr${inProgress[i] ? ' now' : ''}">
+      <div class="pj-mgw">${weekSpan(m)}${inProgress[i] ? '<em>in progress</em>' : ''}</div>
+      <div class="pj-mgn">${p ? `<b>${money(p)}</b>${sub(w.pf, w.pl)}` : '<span class="pj-mgdash">\u2014</span>'}</div>
+      <div class="pj-mgn">${a ? `<b>${money(a)}</b>${sub(w.af, w.al)}` : '<span class="pj-mgdash">\u2014</span>'}</div>
+      ${varCell(a, p)}
+    </div>`;
+  }).join('');
+
+  const tp = W.reduce((s, w, i) => s + (counted[i] ? w.pf + w.pl : 0), 0);
+  const ta = W.reduce((s, w, i) => s + (counted[i] ? w.af + w.al : 0), 0);
+  const tpf = W.reduce((s, w, i) => s + (counted[i] ? w.pf : 0), 0);
+  const tpl = W.reduce((s, w, i) => s + (counted[i] ? w.pl : 0), 0);
+  const taf = W.reduce((s, w, i) => s + (counted[i] ? w.af : 0), 0);
+  const tal = W.reduce((s, w, i) => s + (counted[i] ? w.al : 0), 0);
+
+  const salesTotal = `
+    <div class="pj-mgr tot">
+      <div class="pj-mgw">${totalLabel}</div>
+      <div class="pj-mgn">${tp ? `<b>${money(tp)}</b>${sub(tpf, tpl)}` : '<span class="pj-mgdash">\u2014</span>'}</div>
+      <div class="pj-mgn">${ta ? `<b>${money(ta)}</b>${sub(taf, tal)}` : '<span class="pj-mgdash">\u2014</span>'}</div>
+      ${varCell(ta, tp)}
+    </div>`;
+
+  // ---- budget vs spend, per tracked category
+  const goals = goalsForMonth(firstOfMonthISO(monthStart));
+  const tracked = (prof.categories || ['food', 'lbw', 'supplies']);
+  const order = ['food', 'lbw', 'supplies'].filter((cat) => tracked.includes(cat) && goals[cat] != null);
+  let usedActual = false;
+
+  const baseFor = (w, cat) => {
+    const useActual = (w.af + w.al) > 0;
+    const f = useActual ? w.af : w.pf, l = useActual ? w.al : w.pl;
+    return { base: cat === 'supplies' ? f + l : (cat === 'food' ? f : l), useActual };
+  };
+
+  const budgetBlocks = order.map((cat) => {
+    const g = goals[cat];
+    const label = (CATS.find((cc) => cc.key === cat) || {}).label || cat;
+    let tB = 0, tS = 0;
+    const rows = weeks.map((m, i) => {
+      const w = W[i];
+      const { base, useActual } = baseFor(w, cat);
+      const b = base * g, s = w.spent[cat];
+      if (counted[i]) { tB += b; tS += s; }
+      if (useActual && b) usedActual = true;
+      const left = b - s, over = left < -0.005;
+      return `
+      <div class="pj-mgr${inProgress[i] ? ' now' : ''}">
+        <div class="pj-mgw">${weekSpan(m)}${inProgress[i] ? '<em>in progress</em>' : ''}</div>
+        <div class="pj-mgn">${b ? `<b>${money(b)}</b>${useActual ? '<span class="pj-mgact">on actual</span>' : '<span>on projection</span>'}` : '<span class="pj-mgdash">\u2014</span>'}</div>
+        <div class="pj-mgn"><b>${money(s)}</b></div>
+        <div class="pj-mgv">${b || s ? `<b class="${over ? 'down' : 'up'}">${money(Math.abs(left))}</b><span>${over ? 'over' : 'left'}</span>` : '<span class="pj-mgdash">\u2014</span>'}</div>
+      </div>`;
+    }).join('');
+    const tLeft = tB - tS, tOver = tLeft < -0.005;
+    return `
+    <div class="pj-mg-sec">
+      <div class="pj-mg-sh">${label} budget <span>${(g * 100).toFixed(1).replace(/\.0$/, '')}% of sales</span></div>
+      <div class="pj-mgt">
+        <div class="pj-mgr head"><div>Week</div><div>Budget</div><div>Spent</div><div>Left</div></div>
+        ${rows}
+        <div class="pj-mgr tot">
+          <div class="pj-mgw">${totalLabel}</div>
+          <div class="pj-mgn"><b>${money(tB)}</b></div>
+          <div class="pj-mgn"><b>${money(tS)}</b></div>
+          <div class="pj-mgv"><b class="${tOver ? 'down' : 'up'}">${money(Math.abs(tLeft))}</b><span>${tOver ? 'over' : 'left'}</span></div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  box.innerHTML = `
+    <div class="pj-mg">
+      <div class="pj-mg-h">${monthName(monthStart)} at a glance
+        <span>Mon\u2013Sun weeks, each counted in the month its Monday falls in</span></div>
+      <div class="pj-mg-sec">
+        <div class="pj-mg-sh">Sales <span>projected vs actual</span></div>
+        <div class="pj-mgt">
+          <div class="pj-mgr head"><div>Week</div><div>Projected</div><div>Actual</div><div>Variance</div></div>
+          ${salesRows}
+          ${salesTotal}
+        </div>
+      </div>
+      ${budgetBlocks}
+      ${usedActual ? `<div class="pj-mg-note">Weeks marked <b>on actual</b> budget against the sales that actually posted; the rest still budget against the projection.</div>` : ''}
+    </div>`;
 }
 
 function tracksLbw(prof) { return (prof.categories || []).includes('lbw'); }
@@ -1207,6 +1393,32 @@ function pjStyles() {
       #tab-projections .pj-lin,#tab-projections .pj-lf-row .pj-money{width:100%}
     }
     #tab-projections .pj-attach{font-size:12.5px;color:var(--text2);font-weight:600}
+    #tab-projections .pj-mg{margin-top:26px;padding-top:22px;border-top:1px dashed var(--border)}
+    #tab-projections .pj-mg-h{font-family:var(--font-display);font-weight:800;font-size:17px;color:var(--navy)}
+    #tab-projections .pj-mg-h span{display:block;font-family:inherit;font-weight:500;font-size:12.5px;color:var(--text3);margin-top:3px}
+    #tab-projections .pj-mg-sec{margin-top:18px}
+    #tab-projections .pj-mg-sh{font-size:13px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px}
+    #tab-projections .pj-mg-sh span{text-transform:none;letter-spacing:0;font-weight:500;color:var(--text3);margin-left:8px}
+    #tab-projections .pj-mgt{border:1px solid var(--border);border-radius:var(--r);overflow:hidden;background:var(--bg)}
+    #tab-projections .pj-mgr{display:grid;grid-template-columns:1.25fr 1fr 1fr 1fr;gap:10px;padding:10px 14px;align-items:baseline;border-top:1px solid var(--border)}
+    #tab-projections .pj-mgr:first-child{border-top:0}
+    #tab-projections .pj-mgr.head{background:var(--warm);font-size:11.5px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.04em}
+    #tab-projections .pj-mgr.now{background:rgba(216,91,49,.05)}
+    #tab-projections .pj-mgr.tot{background:var(--warm);border-top:2px solid var(--border)}
+    #tab-projections .pj-mgw{font-size:13.5px;font-weight:600;color:var(--text)}
+    #tab-projections .pj-mgw em{display:block;font-style:normal;font-size:11px;font-weight:600;color:var(--coral);margin-top:2px}
+    #tab-projections .pj-mgn b,#tab-projections .pj-mgv b{display:block;font-family:var(--font-display);font-weight:800;font-size:14.5px;color:var(--navy)}
+    #tab-projections .pj-mgn span,#tab-projections .pj-mgv span{display:block;font-size:11px;color:var(--text3);margin-top:2px}
+    #tab-projections .pj-mgn .pj-mgact{color:var(--green);font-weight:700}
+    #tab-projections .pj-mgv b.up{color:var(--green)}
+    #tab-projections .pj-mgv b.down{color:var(--coral)}
+    #tab-projections .pj-mgdash{color:var(--text3);font-size:13px}
+    #tab-projections .pj-mg-note{margin-top:12px;font-size:12.5px;color:var(--text3)}
+    #tab-projections .pj-mg-note b{color:var(--green);font-weight:700}
+    @media (max-width:640px){
+      #tab-projections .pj-mgr{grid-template-columns:1fr 1fr 1fr;gap:8px;padding:10px}
+      #tab-projections .pj-mgr>*:nth-child(1){grid-column:1 / -1}
+    }
     .pj-lightbox{position:fixed;inset:0;background:rgba(20,26,40,.82);z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px}
     .pj-lightbox .pj-lb-inner{position:relative;max-width:92vw;max-height:92vh}
     .pj-lightbox img{max-width:92vw;max-height:92vh;border-radius:10px;box-shadow:0 12px 48px rgba(0,0,0,.5);display:block}
