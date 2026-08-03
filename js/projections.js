@@ -951,31 +951,59 @@ async function renderBudgetPanel(el, monthRows) {
 
   const mStart = store.month, mEnd = lastOfMonthDate(store.month);
   const wStart = mondayOf(new Date()), wEnd = addDays(wStart, 6);
-  const today = new Date();
+  const today = new Date(); today.setHours(0, 0, 0, 0);
   const isCurrentMonth = store.month.getFullYear() === today.getFullYear() && store.month.getMonth() === today.getMonth();
 
-  let mFood = 0, mLbw = 0, wFood = 0, wLbw = 0;
+  // The MONTH figure runs 1st \u2192 today in the current month, so a
+  // month-to-date budget is measured against month-to-date sales rather than
+  // the whole month's. The WEEK figure stays the full Mon\u2013Sun allowance.
+  const mThrough = isCurrentMonth ? (today.getTime() < mEnd.getTime() ? today : mEnd) : mEnd;
+  const spanFrom = (isCurrentMonth && wStart.getTime() < mStart.getTime()) ? wStart : mStart;
+  const spanTo = (isCurrentMonth && wEnd.getTime() > mEnd.getTime()) ? wEnd : mEnd;
+
+  const byDay = {};
   try {
-    const rm = await sb.from('projection_sales').select('food_revenue,lbw_revenue')
-      .eq('client_id', ctx.clientId).gte('sales_date', ymd(mStart)).lte('sales_date', ymd(mEnd));
-    (rm.data || []).forEach((r) => { mFood += num(r.food_revenue); mLbw += num(r.lbw_revenue); });
-    if (isCurrentMonth) {
-      const rw = await sb.from('projection_sales').select('food_revenue,lbw_revenue')
-        .eq('client_id', ctx.clientId).gte('sales_date', ymd(wStart)).lte('sales_date', ymd(wEnd));
-      (rw.data || []).forEach((r) => { wFood += num(r.food_revenue); wLbw += num(r.lbw_revenue); });
-    }
+    const [rp, ra] = await Promise.all([
+      sb.from('projection_sales').select('sales_date,food_revenue,lbw_revenue')
+        .eq('client_id', ctx.clientId).gte('sales_date', ymd(spanFrom)).lte('sales_date', ymd(spanTo)),
+      sb.from('projection_actuals').select('sales_date,food_revenue,lbw_revenue')
+        .eq('client_id', ctx.clientId).gte('sales_date', ymd(spanFrom)).lte('sales_date', ymd(spanTo)),
+    ]);
+    if (rp.error) throw rp.error;
+    if (ra.error) throw ra.error;
+    const slot = (k) => { if (!byDay[k]) byDay[k] = { pf: 0, pl: 0, af: 0, al: 0 }; return byDay[k]; };
+    (rp.data || []).forEach((r) => { const d = slot(r.sales_date); d.pf += num(r.food_revenue); d.pl += num(r.lbw_revenue); });
+    (ra.data || []).forEach((r) => { const d = slot(r.sales_date); d.af += num(r.food_revenue); d.al += num(r.lbw_revenue); });
   } catch (e) { box.innerHTML = ''; return; }
 
-  const ws = ymd(wStart), we = ymd(wEnd);
+  // Day by day: budget against the sales that actually posted once they exist,
+  // and against the projection until then.
+  let usedActual = false;
+  const baseOver = (from, to) => {
+    let f = 0, l = 0;
+    for (let d = new Date(from); d.getTime() <= to.getTime(); d = addDays(d, 1)) {
+      const r = byDay[ymd(d)];
+      if (!r) continue;
+      const useActual = (r.af + r.al) > 0;
+      if (useActual) usedActual = true;
+      f += useActual ? r.af : r.pf;
+      l += useActual ? r.al : r.pl;
+    }
+    return { food: f, lbw: l, supplies: f + l };
+  };
+
+  const ws = ymd(wStart), we = ymd(wEnd), td = ymd(today);
   const monthSpent = { food: 0, lbw: 0, supplies: 0 }, weekSpent = { food: 0, lbw: 0, supplies: 0 };
   monthRows.forEach((r) => {
-    if (monthSpent[r.category] != null) monthSpent[r.category] += num(r.amount);
+    // A future-dated invoice would otherwise be counted against a budget that
+    // only runs through today.
+    if (!(isCurrentMonth && r.receiving_date > td) && monthSpent[r.category] != null) monthSpent[r.category] += num(r.amount);
     if (isCurrentMonth && r.receiving_date >= ws && r.receiving_date <= we && weekSpent[r.category] != null) weekSpent[r.category] += num(r.amount);
   });
 
   // supplies budgets off TOTAL sales (food + LBW); food/LBW off their own revenue
-  const baseMonth = { food: mFood, lbw: mLbw, supplies: mFood + mLbw };
-  const baseWeek = { food: wFood, lbw: wLbw, supplies: wFood + wLbw };
+  const baseMonth = baseOver(mStart, mThrough);
+  const baseWeek = isCurrentMonth ? baseOver(wStart, wEnd) : { food: 0, lbw: 0, supplies: 0 };
 
   const row = (label, budget, spent) => {
     const left = budget - spent, over = left < -0.005;
@@ -1001,7 +1029,9 @@ async function renderBudgetPanel(el, monthRows) {
       ${isCurrentMonth ? row('This week', wB, weekSpent[cat]) : ''}
       ${row(isCurrentMonth ? 'Month to date' : monthName(store.month), mB, monthSpent[cat])}
     </div>`;
-  }).join('');
+  }).join('') + (usedActual
+    ? `<div class="pj-mg-note">Budget reflects the sales that actually posted on days QuickBooks has closed, and the projection on days it hasn't.</div>`
+    : '');
 }
 
 async function loadEntries(el, cats) {
