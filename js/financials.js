@@ -149,7 +149,7 @@ async function loadPublishedPnl(sec) {
     const r = await sb.from('pnl_reports').select('statement,generated_at').eq('client_id', state.clientId).eq('period', bsKey(pnlMonth)).eq('published', true).maybeSingle();
     if (r.error) throw r.error;
     if (!r.data) { body.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:10px 0">' + (state.isTeam ? 'Nothing published for ' + bsMonthName(pnlMonth) + ' yet. Pull it from QuickBooks above, then publish.' : 'No P&L has been posted for ' + bsMonthName(pnlMonth) + ' yet.') + '</div>'; return; }
-    body.innerHTML = renderPnlStatement(r.data.statement || [], pnlPeriods()) + '<div style="font-size:11px;color:var(--text3);margin-top:8px">Published ' + (r.data.generated_at ? new Date(r.data.generated_at).toLocaleDateString() : '') + ' \u00b7 click any account line to see its transactions</div>';
+    body.innerHTML = renderPnlStatement(r.data.statement || [], pnlPeriods()) + '<div style="font-size:11px;color:var(--text3);margin-top:8px">Published ' + (r.data.generated_at ? new Date(r.data.generated_at).toLocaleDateString() : '') + ' \u00b7 click any account line \u2014 or a section total \u2014 to see its transactions</div>';
     wirePnlDrill(body);
   } catch (e) { body.innerHTML = '<div style="color:#b93232;font-size:13px">Couldn\u2019t load: ' + bsEsc(e.message || e) + '</div>'; }
 }
@@ -1972,11 +1972,111 @@ function pnlPeriods() {
     { key: bsKey(yoy), label: bsMonthName(yoy) + ' (YoY)' },
   ];
 }
+// ── Parent "own balance" rows.
+// QuickBooks folds a parent account's OWN postings into the section Total and
+// never gives them a line of their own. The section then doesn't foot — the
+// visible children add to less than the Total — and clicking a child honestly
+// reports no transactions, because the money isn't on the child. We recover
+// the difference at RENDER time (Total minus the direct children) and show it
+// as its own drillable line. Doing it here rather than in qbo-pnl means every
+// statement already published is fixed too, with no re-pull and no re-publish.
+//
+// Set PNL_OWN_SUFFIX to '' for a neutral label that reads like any other
+// account line.
+const PNL_OWN_SUFFIX = ' \u2014 posted directly';
+const PNL_ROLLUP_MAX_TXNS = 400;
+
+function pnlNorm(x) { return String(x || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+
+// "Total 7600 Repairs and Maintenance" -> "7600 Repairs and Maintenance".
+// Returns null for a total that names no section (Gross Profit, Net Income),
+// which is exactly what keeps those rows out of the pairing below.
+function pnlStripTotal(label) {
+  const m = /^total\s+(.*)$/i.exec(String(label == null ? '' : label).trim());
+  return m && m[1].trim() ? m[1].trim() : null;
+}
+
+// Pair each "Total X" row with the nearest still-open "X" header. Pairing is
+// by LABEL, not by indent, so it can't be thrown off by how qbo-pnl chooses to
+// indent a section.
+function pnlPairSections(rows) {
+  const pairs = [];
+  const open = [];
+  (rows || []).forEach((r, i) => {
+    if (!r) return;
+    if (r.kind === 'header') { open.push(i); return; }
+    if (r.kind !== 'total') return;
+    const base = pnlStripTotal(r.label);
+    if (base == null) return;
+    const want = pnlNorm(base);
+    for (let k = open.length - 1; k >= 0; k--) {
+      if (pnlNorm(rows[open[k]].label) === want) {
+        pairs.push({ headerIndex: open[k], totalIndex: i });
+        open.length = k;
+        break;
+      }
+    }
+  });
+  return pairs;
+}
+
+// The rows that the section Total is supposed to be the sum of: accounts at
+// this level, plus each nested section counted once through its own total.
+function pnlDirectChildren(rows, headerIndex, totalIndex) {
+  const kids = [];
+  let depth = 0;
+  for (let i = headerIndex + 1; i < totalIndex; i++) {
+    const r = rows[i] || {};
+    if (r.kind === 'header') { depth++; continue; }
+    if (r.kind === 'total') { if (depth > 0) { depth--; if (depth === 0) kids.push(r); } continue; }
+    if (r.kind === 'account' && depth === 0) kids.push(r);
+  }
+  return kids;
+}
+
+function pnlOwnAmounts(totalRow, kids, periods) {
+  const amounts = {};
+  let material = false;
+  periods.forEach((p) => {
+    const t = totalRow.amounts ? totalRow.amounts[p.key] : null;
+    if (t == null) { amounts[p.key] = null; return; }
+    let sum = 0;
+    kids.forEach((k) => { const v = k.amounts ? k.amounts[p.key] : null; if (v != null) sum += Number(v); });
+    const d = Number(t) - sum;
+    amounts[p.key] = d;
+    if (Math.abs(d) > 0.5) material = true;
+  });
+  return material ? amounts : null;
+}
+
+function pnlWithOwnRows(rows, periods) {
+  const src = (rows || []);
+  const insertBefore = {};
+  pnlPairSections(src).forEach(({ headerIndex, totalIndex }) => {
+    const kids = pnlDirectChildren(src, headerIndex, totalIndex);
+    if (!kids.length) return;                       // a leaf account: nothing to split out
+    const amounts = pnlOwnAmounts(src[totalIndex], kids, periods);
+    if (!amounts) return;                           // section foots: nothing hiding
+    const base = src[headerIndex].label;
+    insertBefore[totalIndex] = {
+      kind: 'account',
+      own: true,
+      indent: kids[0].indent != null ? kids[0].indent : (src[headerIndex].indent || 0) + 1,
+      label: base + PNL_OWN_SUFFIX,
+      matchLabel: base,
+      amounts,
+    };
+  });
+  const out = [];
+  src.forEach((r, i) => { if (insertBefore[i]) out.push(insertBefore[i]); out.push(r); });
+  return out;
+}
+
 function renderPnlStatement(rows, periods) {
   const cur = periods && periods[0] ? periods[0] : { key: '', label: '' };
   const head = '<tr><th style="text-align:left;padding:6px 10px"></th>'
     + periods.map((p) => '<th style="text-align:right;padding:6px 10px;font-size:11px;color:#888;white-space:nowrap">' + bsEsc(p.label) + '</th>').join('') + '</tr>';
-  const body = (rows || []).map((r) => {
+  const body = pnlWithOwnRows(rows, periods).map((r) => {
     const pad = 10 + (r.indent || 0) * 16;
     const bold = r.kind !== 'account';
     const border = r.kind === 'total' ? 'border-top:1px solid var(--border)' : '';
@@ -1986,21 +2086,29 @@ function renderPnlStatement(rows, periods) {
       return '<td style="padding:5px 10px;text-align:right;' + (bold ? 'font-weight:700' : '') + '">' + (v == null ? '' : bsFmt(v)) + '</td>';
     }).join('');
     const isAcct = r.kind === 'account';
-    const curAmt = (isAcct && r.amounts && r.amounts[cur.key] != null) ? r.amounts[cur.key] : '';
-    const attrs = isAcct
-      ? ' class="pnl-acct" data-label="' + bsEsc(r.label) + '" data-amt="' + curAmt + '" title="Show transactions" '
+    const sectionOfTotal = r.kind === 'total' ? pnlStripTotal(r.label) : null;
+    const isRollup = sectionOfTotal != null;
+    const drill = isAcct || isRollup;
+    const curAmt = (drill && r.amounts && r.amounts[cur.key] != null) ? r.amounts[cur.key] : '';
+    const match = r.matchLabel || sectionOfTotal || r.label;
+    const mode = r.own ? 'own' : (isRollup ? 'rollup' : 'leaf');
+    const attrs = drill
+      ? ' class="pnl-acct" data-label="' + bsEsc(r.label) + '" data-match="' + bsEsc(match) + '" data-mode="' + mode + '" data-amt="' + curAmt + '" title="'
+        + (isRollup ? 'Show every transaction in this section' : 'Show transactions') + '" '
       : ' ';
-    const caret = isAcct ? '<span class="pnl-caret" style="color:#bbb;font-size:10px;margin-right:5px">\u25b8</span>' : '';
-    return '<tr' + attrs + 'style="' + border + (isAcct ? ';cursor:pointer' : '') + '"><td style="padding:5px 10px 5px ' + pad + 'px;' + (bold ? 'font-weight:700;' : '') + 'color:' + color + '">' + caret + bsEsc(r.label) + '</td>' + cells + '</tr>';
+    const caret = drill ? '<span class="pnl-caret" style="color:#bbb;font-size:10px;margin-right:5px">\u25b8</span>' : '';
+    return '<tr' + attrs + 'style="' + border + (drill ? ';cursor:pointer' : '') + '"><td style="padding:5px 10px 5px ' + pad + 'px;' + (bold ? 'font-weight:700;' : '') + 'color:' + color + '">' + caret + bsEsc(r.label) + '</td>' + cells + '</tr>';
   }).join('');
   return '<table data-period="' + bsEsc(cur.key) + '" data-plabel="' + bsEsc(cur.label) + '" style="width:100%;border-collapse:collapse;font-size:13px;max-width:680px"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
 }
 
 // ── Inline drill-down: click an account line in the statement, see that
 // month's transactions LIVE from QuickBooks. One fetch per month (cached for
-// the session); every expanded row reads from it. When the live total differs
-// from the published figure, the row says so instead of leaving the reader to
-// wonder which number to trust.
+// the session); every expanded row reads from it. Clicking a section Total
+// rolls the whole section up — the parent's own postings plus every
+// sub-account — which is the question most people are actually asking. When
+// the live total differs from the published figure, the row says so instead
+// of leaving the reader to wonder which number to trust.
 const pnlDrillCache = {};
 function pnlDetailLive(period) {
   const key = state.clientId + '|' + period;
@@ -2020,35 +2128,100 @@ function pnlDetailLive(period) {
   }
   return pnlDrillCache[key];
 }
-function pnlNorm(x) { return String(x || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+// Statement labels carry the account number ("7600 Repairs and Maintenance");
+// QuickBooks' detail report may or may not, depending on that company's report
+// settings. Split both and match on the number when we have one on each side,
+// on the name otherwise.
+function pnlSplitLabel(label) {
+  const s = String(label == null ? '' : label).trim();
+  const m = /^(\d[\w.\-]*)\s+(.+)$/.exec(s);
+  return m ? { num: m[1], name: m[2] } : { num: '', name: s };
+}
+function pnlSameAccount(a, label) {
+  if (!a) return false;
+  const want = pnlSplitLabel(label);
+  const num = String(a.account_number != null ? a.account_number : (a.number || '')).trim();
+  const nm = pnlSplitLabel(a.account_name != null ? a.account_name : (a.name || ''));
+  if (want.num && num && pnlNorm(want.num) === pnlNorm(num)) return true;
+  if (want.num && nm.num && pnlNorm(want.num) === pnlNorm(nm.num)) return true;
+  return !!want.name && pnlNorm(want.name) === pnlNorm(nm.name);
+}
+function pnlAcctLabel(a) {
+  return ((a && a.account_number) ? a.account_number + ' ' : '') + ((a && a.account_name) || '');
+}
 function pnlFindAcct(accounts, label) {
   const L = pnlNorm(label);
   return accounts.find((a) => pnlNorm((a.account_number ? a.account_number + ' ' : '') + a.account_name) === L)
     || accounts.find((a) => pnlNorm(a.account_name) === L)
     || accounts.find((a) => a.account_number && L.startsWith(pnlNorm(a.account_number)) && L.indexOf(pnlNorm(a.account_name)) !== -1)
+    || accounts.find((a) => pnlSameAccount(a, label))
     || null;
 }
-function pnlDrillHtml(acct, stmtAmt, plabel) {
-  const txns = (acct && acct.txns) || [];
-  const live = acct ? Number(acct.total || 0) : 0;
-  let note = '';
-  if (acct == null) {
-    note = '<div style="font-size:12px;color:var(--text3);margin-bottom:6px">No transaction detail found for this line in QuickBooks.</div>';
-  } else if (stmtAmt !== '' && Math.abs(live - Number(stmtAmt)) > 0.5) {
-    note = '<div style="font-size:12px;color:#8a5a00;background:#fbf0dd;border-radius:6px;padding:6px 9px;margin-bottom:6px">Live from QuickBooks: ' + bsFmt(live) + ' \u2014 differs from the published statement (' + bsFmt(Number(stmtAmt)) + '). The books have changed since this month was published.</div>';
-  } else {
-    note = '<div style="font-size:11.5px;color:var(--text3);margin-bottom:4px">Live from QuickBooks' + (stmtAmt !== '' ? ' \u2014 matches the published statement.' : '.') + '</div>';
-  }
-  const table = txns.length ? ('<table style="width:100%;border-collapse:collapse;font-size:12.5px">'
-    + '<thead><tr style="color:#888;font-size:10.5px;text-transform:uppercase"><th style="text-align:left;padding:4px 8px">Date</th><th style="text-align:left;padding:4px 8px">Type</th><th style="text-align:left;padding:4px 8px">Name</th><th style="text-align:left;padding:4px 8px">Memo</th><th style="text-align:right;padding:4px 8px">Amount</th></tr></thead><tbody>'
-    + txns.map((t) => '<tr style="border-top:1px solid #f0f0f0">'
+// Everything posted in a section: the section's own account plus every
+// descendant, found through the ancestor path the Edge Function returns.
+function pnlCollectRollup(accounts, label) {
+  return (accounts || []).filter((a) => pnlSameAccount(a, label)
+    || ((a.path || []).some((p) => pnlSameAccount(p, label))));
+}
+function pnlTxnTable(txns, withAccount) {
+  if (!txns.length) return '';
+  const capped = txns.slice(0, PNL_ROLLUP_MAX_TXNS);
+  const more = txns.length - capped.length;
+  return '<table style="width:100%;border-collapse:collapse;font-size:12.5px">'
+    + '<thead><tr style="color:#888;font-size:10.5px;text-transform:uppercase"><th style="text-align:left;padding:4px 8px">Date</th><th style="text-align:left;padding:4px 8px">Type</th>'
+    + (withAccount ? '<th style="text-align:left;padding:4px 8px">Account</th>' : '')
+    + '<th style="text-align:left;padding:4px 8px">Name</th><th style="text-align:left;padding:4px 8px">Memo</th><th style="text-align:right;padding:4px 8px">Amount</th></tr></thead><tbody>'
+    + capped.map((t) => '<tr style="border-top:1px solid #f0f0f0">'
       + '<td style="padding:4px 8px;white-space:nowrap">' + bsEsc(t.date) + '</td>'
       + '<td style="padding:4px 8px">' + bsEsc(t.type) + (t.doc_num ? ' #' + bsEsc(t.doc_num) : '') + '</td>'
+      + (withAccount ? '<td style="padding:4px 8px;color:#666">' + bsEsc(t.account || '') + '</td>' : '')
       + '<td style="padding:4px 8px">' + bsEsc(t.name) + '</td>'
       + '<td style="padding:4px 8px;color:#666">' + bsEsc(t.memo) + '</td>'
       + '<td style="padding:4px 8px;text-align:right">' + bsFmt(t.amount) + '</td></tr>').join('')
-    + '</tbody></table>') : (acct ? '<div style="font-size:12.5px;color:var(--text3)">No transactions this month.</div>' : '');
-  return note + table;
+    + '</tbody></table>'
+    + (more > 0 ? '<div style="font-size:11.5px;color:var(--text3);margin-top:6px">Showing the first ' + PNL_ROLLUP_MAX_TXNS + ' of ' + txns.length + ' transactions \u2014 open the individual account lines for the rest.</div>' : '');
+}
+function pnlCompareNote(live, stmtAmt) {
+  if (stmtAmt !== '' && stmtAmt != null && Math.abs(live - Number(stmtAmt)) > 0.5) {
+    return '<div style="font-size:12px;color:#8a5a00;background:#fbf0dd;border-radius:6px;padding:6px 9px;margin-bottom:6px">Live from QuickBooks: ' + bsFmt(live) + ' \u2014 differs from the published statement (' + bsFmt(Number(stmtAmt)) + '). The books have changed since this month was published.</div>';
+  }
+  return '<div style="font-size:11.5px;color:var(--text3);margin-bottom:4px">Live from QuickBooks' + ((stmtAmt !== '' && stmtAmt != null) ? ' \u2014 matches the published statement.' : '.') + '</div>';
+}
+function pnlDrillHtml(acct, stmtAmt, plabel, mode, matchLabel) {
+  const txns = (acct && acct.txns) || [];
+  if (acct == null) {
+    // Nothing posted to this exact account. Say which of the two situations
+    // that is, rather than leaving a figure on screen with no explanation.
+    const amt = (stmtAmt === '' || stmtAmt == null) ? 0 : Number(stmtAmt);
+    if (Math.abs(amt) > 0.5) {
+      return '<div style="font-size:12px;color:#8a5a00;background:#fbf0dd;border-radius:6px;padding:6px 9px">'
+        + 'The statement shows ' + bsFmt(amt) + ' for ' + bsEsc(plabel) + ', but QuickBooks has nothing posted directly to '
+        + bsEsc(matchLabel || 'this account') + '. It is sitting on a sub-account or a parent \u2014 click the section Total line to see everything underneath it.</div>';
+    }
+    return '<div style="font-size:12.5px;color:var(--text3)">Nothing posted to this account in ' + bsEsc(plabel) + '.</div>';
+  }
+  const live = Number(acct.total || 0);
+  const note = pnlCompareNote(live, stmtAmt)
+    + (mode === 'own' ? '<div style="font-size:11.5px;color:var(--text3);margin-bottom:4px">Posted straight to the parent account rather than to one of its sub-accounts.</div>' : '');
+  return note + (txns.length ? pnlTxnTable(txns, false) : '<div style="font-size:12.5px;color:var(--text3)">No transactions this month.</div>');
+}
+function pnlRollupHtml(list, stmtAmt, plabel, matchLabel) {
+  if (!list.length) {
+    return '<div style="font-size:12.5px;color:var(--text3)">No transactions in this section for ' + bsEsc(plabel) + '.</div>';
+  }
+  const live = list.reduce((s, a) => s + Number(a.total || 0), 0);
+  const breakdown = '<table style="width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:8px;max-width:460px"><tbody>'
+    + list.slice().sort((a, b) => Math.abs(Number(b.total || 0)) - Math.abs(Number(a.total || 0))).map((a) => {
+      const self = pnlSameAccount(a, matchLabel);
+      return '<tr style="border-top:1px solid #f0f0f0"><td style="padding:3px 8px">' + bsEsc(pnlAcctLabel(a))
+        + (self ? '<span style="color:var(--text3);font-size:11px"> \u00b7 posted directly</span>' : '')
+        + '</td><td style="padding:3px 8px;text-align:right;font-weight:700">' + bsFmt(Number(a.total || 0)) + '</td></tr>';
+    }).join('')
+    + '</tbody></table>';
+  const txns = [];
+  list.forEach((a) => (a.txns || []).forEach((t) => txns.push(Object.assign({}, t, { account: pnlAcctLabel(a) }))));
+  txns.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  return pnlCompareNote(live, stmtAmt) + breakdown + pnlTxnTable(txns, true);
 }
 function wirePnlDrill(container) {
   container.onclick = async (e) => {
@@ -2070,8 +2243,13 @@ function wirePnlDrill(container) {
     try {
       const accounts = await pnlDetailLive(period);
       if (!drill.isConnected) return;
-      const acct = pnlFindAcct(accounts, tr.getAttribute('data-label'));
-      drill.firstElementChild.innerHTML = '<div style="font-weight:700;font-size:12px;margin-bottom:4px">' + bsEsc(tr.getAttribute('data-label')) + ' \u2014 ' + bsEsc(plabel) + '</div>' + pnlDrillHtml(acct, tr.getAttribute('data-amt'), plabel);
+      const mode = tr.getAttribute('data-mode') || 'leaf';
+      const match = tr.getAttribute('data-match') || tr.getAttribute('data-label');
+      const stmtAmt = tr.getAttribute('data-amt');
+      const inner = mode === 'rollup'
+        ? pnlRollupHtml(pnlCollectRollup(accounts, match), stmtAmt, plabel, match)
+        : pnlDrillHtml(pnlFindAcct(accounts, match), stmtAmt, plabel, mode, match);
+      drill.firstElementChild.innerHTML = '<div style="font-weight:700;font-size:12px;margin-bottom:4px">' + bsEsc(tr.getAttribute('data-label')) + ' \u2014 ' + bsEsc(plabel) + '</div>' + inner;
     } catch (err) {
       if (drill.isConnected) drill.firstElementChild.innerHTML = '<div style="font-size:12.5px;color:#b93232">Couldn\u2019t load transactions: ' + bsEsc(err.message || err) + '</div>';
     }
