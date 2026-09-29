@@ -12,10 +12,14 @@ import { mountPnlSummary, unmountPnlSummary } from './pnl-summary.js';
 import { mountDocuments, unmountDocuments } from './documents.js';
 import { mountProjections, unmountProjections } from './projections.js';
 import { mountHome as mountHomeView, unmountHome } from './home.js';
+import { mountCompare, unmountCompare } from './compare.js';
 
 const LAST_TAB_KEY = 'bg_client_portal_last_tab';
 const DEFAULT_TAB = 'home';
-const TABS = ['home', 'financials', 'kpi', 'pnl-summary', 'documents', 'projections', 'messages'];
+const TABS = ['home', 'financials', 'kpi', 'pnl-summary', 'compare', 'documents', 'projections', 'messages'];
+// Compare only makes sense with 2+ entities. Team members always qualify;
+// a client linked to a single location never sees the tab.
+function canCompare() { return state.clients.length >= 2; }
 
 // App state
 const state = {
@@ -228,7 +232,10 @@ async function enterApp(user) {
   if (dlMsg) window.__deepLinkMsgId = dlMsg;
   if (dlTab || dlClient || dlMsg) history.replaceState(null, '', location.pathname);
   const savedTab = localStorage.getItem(LAST_TAB_KEY);
+  const cmpNav = document.querySelector('.nav-item[data-tab="compare"]');
+  if (cmpNav) cmpNav.style.display = canCompare() ? '' : 'none';
   state.currentTab = TABS.includes(dlTab) ? dlTab : (TABS.includes(savedTab) ? savedTab : DEFAULT_TAB);
+  if (state.currentTab === 'compare' && !canCompare()) state.currentTab = DEFAULT_TAB;
   highlightNav(state.currentTab);
   showPane(state.currentTab);
 
@@ -262,6 +269,7 @@ function bindAppShell() {
     if (!item || !item.dataset.tab) return;
     const next = item.dataset.tab;
     if (!TABS.includes(next) || next === state.currentTab) return;
+    if (next === 'compare' && !canCompare()) return;
     await switchTab(next);
   });
 }
@@ -362,6 +370,7 @@ const TAB_TITLES = {
   financials:  { title: 'Financials',                 sub: 'P&L, Prime Sheet, and other monthly documents' },
   kpi:         { title: 'KPI Dashboard',              sub: 'Trailing 13 months from your P&L data' },
   'pnl-summary': { title: 'Prime Sheet',              sub: 'Current month vs prior month and same month last year' },
+  compare:     { title: 'Compare P&Ls',               sub: 'Your locations side by side, with a combined total' },
   documents:   { title: 'Documents',                  sub: 'W-9s, voided checks, tax documents, and other long-lived records' },
   projections: { title: 'Projections & Receiving Log', sub: 'Forecasts, receiving log, and month-end review' },
   messages:    { title: 'Client Questions',          sub: 'Questions and answers with the Bald Ginger team' },
@@ -398,7 +407,7 @@ function showPane(tab) {
   // KPI Dashboard, P&L Summary, Financials, and Documents all use a wider layout.
   // Toggle a class on .main so the global max-width:980px constraint is lifted.
   const mainEl = document.querySelector('.main');
-  if (mainEl) mainEl.classList.toggle('main-wide', tab === 'kpi' || tab === 'pnl-summary' || tab === 'financials' || tab === 'documents');
+  if (mainEl) mainEl.classList.toggle('main-wide', tab === 'kpi' || tab === 'pnl-summary' || tab === 'compare' || tab === 'financials' || tab === 'documents');
 }
 
 function updatePageHeader(client) {
@@ -429,6 +438,8 @@ async function mountCurrentTab() {
       await mountKPI({ clientId });
     } else if (t === 'pnl-summary') {
       await mountPnlSummary({ clientId });
+    } else if (t === 'compare') {
+      await mountCompare({ clients: state.clients, currentClientId: clientId, userId: state.user.id });
     } else if (t === 'documents') {
       await mountDocuments({ clientId, isTeam: !!state.profile.is_team, userId: state.user.id });
     } else if (t === 'messages') {
@@ -473,6 +484,7 @@ function unmountCurrentTab() {
     else if (t === 'financials') unmountFinancials();
     else if (t === 'kpi')   unmountKPI();
     else if (t === 'pnl-summary') unmountPnlSummary();
+    else if (t === 'compare') unmountCompare();
     else if (t === 'documents') unmountDocuments();
     else if (t === 'messages') unsubscribeMessages();
     else if (t === 'projections') unmountProjections();

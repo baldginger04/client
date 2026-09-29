@@ -2049,7 +2049,7 @@ function pnlOwnAmounts(totalRow, kids, periods) {
   return material ? amounts : null;
 }
 
-function pnlWithOwnRows(rows, periods) {
+export function pnlWithOwnRows(rows, periods) {
   const src = (rows || []);
   const insertBefore = {};
   pnlPairSections(src).forEach(({ headerIndex, totalIndex }) => {
