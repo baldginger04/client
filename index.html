@@ -157,6 +157,7 @@
           <div class="nav-item"          data-tab="financials">📊 Financials</div>
           <div class="nav-item"          data-tab="kpi">📈 KPI Dashboard</div>
           <div class="nav-item"          data-tab="pnl-summary">📋 Prime Sheet</div>
+          <div class="nav-item"          data-tab="compare" style="display:none">⚖️ Compare P&amp;Ls</div>
           <div class="nav-item"          data-tab="documents">📁 Documents</div>
           <div class="nav-item"          data-tab="projections">🔮 Projections &amp; Receiving Log</div>
           <div class="nav-item"          data-tab="messages">❓ Client Questions <span id="cqBadge" style="display:none;margin-left:6px;min-width:18px;height:18px;padding:0 5px;background:#e5484d;color:#fff;font-size:10px;font-weight:600;border-radius:9px;vertical-align:middle;align-items:center;justify-content:center">0</span></div>
@@ -248,6 +249,14 @@
         <!-- Owned by js/pnl-summary.js                     -->
         <!-- ============================================= -->
         <section class="tab-pane" id="tab-pnl-summary" style="display:none">
+        </section>
+
+        <!-- ============================================= -->
+        <!-- TAB: COMPARE P&Ls                              -->
+        <!-- Owned by js/compare.js. Nav item is revealed   -->
+        <!-- by main.js only for users with 2+ entities.    -->
+        <!-- ============================================= -->
+        <section class="tab-pane" id="tab-compare" style="display:none">
         </section>
 
         <!-- ============================================= -->
