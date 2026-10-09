@@ -39,9 +39,14 @@ export async function loadUserContext(userId) {
   // Client list. RLS makes this return only the clients the user can access:
   //   - team members see all clients
   //   - portal users see only clients they're linked to via client_users
+  // Archived clients (archived from Triple) are left out for everyone, so an
+  // archived client disappears from the switcher, Home and Compare here too.
+  // Client logins are already cut off by Triple's archive (client_users is
+  // stamped archived_at), so this mainly matters for the team.
   const { data: clients, error: cErr } = await sb
     .from('clients')
     .select('id, name')
+    .is('archived_at', null)
     .order('name');
   if (cErr) throw cErr;
 
