@@ -118,7 +118,7 @@ async function renderConn() {
     el.innerHTML = `
       <div class="rc-row">
         <div><div class="rc-t"><span class="rc-dot on"></span>QuickBooks connected</div>
-          <div class="rc-s">Realm ${esc(s.realm_id)}${s.updated_at ? ` · linked ${new Date(s.updated_at).toLocaleDateString()}` : ''}</div></div>
+          <div class="rc-s">${s.company_name ? `QuickBooks company: <b>${esc(s.company_name)}</b> · ` : ''}Realm ${esc(s.realm_id)}${s.updated_at ? ` · linked ${new Date(s.updated_at).toLocaleDateString()}` : ''}</div></div>
         <button class="rc-ghost" id="rcDisc">Disconnect</button>
       </div>`;
     el.querySelector('#rcDisc').addEventListener('click', disconnect);

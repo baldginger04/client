@@ -18,9 +18,18 @@
 // Periods: an END month plus a range (single month, year to date, trailing
 // 3, trailing 12). Ranges are summed dollars; every % is ratio-of-sums,
 // never an average of monthly percentages.
+//
+// Net Income (Prime Sheet lines view) is QuickBooks' own Net Income from each
+// entity's PUBLISHED P&L, not a sum of the mapped lines: mapped lines leave out
+// unmapped accounts and other income/expense, so a computed figure would not
+// tie to the books. A month with no published P&L leaves that entity blank.
+//
+// Download PDF: the table on screen, branded (Bald Ginger + client logo).
 // =====================================================================
 import { sb } from './config.js';
 import { pnlWithOwnRows } from './financials.js';
+import { getClientRow } from './branding.js';
+import { ensurePdfLib, loadBaldGingerLogo, loadImageAsPng, drawBrandHeader, drawFooters, pdfText, pdfFileName, PDF_NAVY, PDF_GREY, PDF_MARGIN } from './pdf-brand.js';
 
 const SEL_KEY_PREFIX = 'bg_compare_sel_';
 const MODE_KEY = 'bg_compare_mode';
@@ -138,7 +147,9 @@ function renderShell() {
         <select id="cmpRange" class="cmp-select" aria-label="Range">
           ${RANGES.map((r) => `<option value="${r.id}">${r.label}</option>`).join('')}
         </select>
+        <button type="button" class="cmp-pdf" id="cmpPdf" disabled>&#8681; Download PDF</button>
       </div>
+      <div id="cmpPdfMsg" class="cmp-pdf-msg"></div>
       <div class="cmp-entities">
         <div class="cmp-picker-wrap">
           <button type="button" class="cmp-pick-btn" id="cmpPickBtn">Entities <span id="cmpPickCount"></span> &#9662;</button>
@@ -156,6 +167,7 @@ function renderShell() {
   }));
   root.querySelector('#cmpPrev').addEventListener('click', () => { state.endMonth = addMonths(state.endMonth, -1); syncControls(); loadAndRender(); });
   root.querySelector('#cmpNext').addEventListener('click', () => { state.endMonth = addMonths(state.endMonth, 1); syncControls(); loadAndRender(); });
+  root.querySelector('#cmpPdf').addEventListener('click', downloadComparePdf);
   root.querySelector('#cmpRange').addEventListener('change', (e) => { state.range = e.target.value; lsSet(RANGE_KEY, state.range); syncControls(); loadAndRender(); });
   root.querySelector('#cmpPickBtn').addEventListener('click', (e) => { e.stopPropagation(); state.pickerOpen = !state.pickerOpen; renderPicker(); });
   root.querySelector('#cmpChips').addEventListener('click', (e) => {
@@ -248,6 +260,9 @@ function rangeLabel() {
 async function loadAndRender() {
   const body = document.getElementById('cmpBody'); if (!body) return;
   const note = document.getElementById('cmpNote'); if (note) note.innerHTML = '';
+  const pdfBtn = document.getElementById('cmpPdf');
+  const setPdf = () => { if (pdfBtn) pdfBtn.disabled = !body.querySelector('table.cmp-table'); };
+  if (pdfBtn) pdfBtn.disabled = true;
   const my = ++state.reqId;
   if (!state.selected.length) { body.innerHTML = '<div class="cmp-empty">Pick entities above to compare them side by side.</div>'; return; }
   body.innerHTML = '<div class="state-msg"><span class="spinner"></span> Loading…</div>';
@@ -256,6 +271,7 @@ async function loadAndRender() {
     if (my !== state.reqId) return;
     body.innerHTML = html.table;
     if (note) note.innerHTML = html.note || '';
+    setPdf();
   } catch (e) {
     if (my !== state.reqId) return;
     body.innerHTML = `<div class="cmp-err">Couldn’t load: ${esc(e.message || e)} <button type="button" class="cmp-retry">Retry</button></div>`;
@@ -355,6 +371,15 @@ async function buildCategoryView() {
     groups.other.forEach((k) => lineRow(catLabel(k), (c) => c.data[k] || 0, inc, ''));
   }
 
+  // Net Income — QuickBooks' figure from the published P&Ls (see header note).
+  const ni = await loadNetIncome(ids, keys);
+  cols.forEach((c) => { c.ni = ni.byId[c.id]; });
+  if (showCombined) {
+    const comb = allCols[allCols.length - 1];
+    comb.ni = cols.every((c) => c.ni != null) ? cols.reduce((sum, c) => sum + c.ni, 0) : null;
+  }
+  if (out.length) lineRow('Net Income', (c) => (c.ni == null ? null : c.ni), inc, 'key');
+
   if (!out.length) {
     return { table: `<div class="cmp-empty">No P&amp;L data for ${esc(rangeLabel())} in the selected entities.</div>` };
   }
@@ -366,8 +391,55 @@ async function buildCategoryView() {
     if (n === 0) notes.push(`<b>${esc(c.name)}</b> has no data for this period.`);
     else if (n < keys.length) notes.push(`<b>${esc(c.name)}</b> has ${n} of ${keys.length} months.`);
   });
-  const foot = 'COGS lines show % of their own sales line; everything else is % of Total Income. Ranges sum the dollars, so % are true ratios.';
+  const niMissing = cols.filter((c) => c.ni == null && monthsSeen[c.id].size);
+  if (niMissing.length) {
+    notes.push('Net Income is blank for ' + niMissing.map((c) => `<b>${esc(c.name)}</b>`).join(', ')
+      + ' \u2014 ' + (niMissing.length === 1 ? 'its' : 'their') + ' P&amp;L isn\u2019t published for every month in this range'
+      + (showCombined ? ', so the combined Net Income is blank too.' : '.'));
+  }
+  const foot = 'COGS lines show % of their own sales line; everything else is % of Total Income. Ranges sum the dollars, so % are true ratios. Net Income is QuickBooks\u2019 figure from each published P&amp;L.';
   return { table: renderTable(allCols, out, 'Prime Sheet lines · ' + rangeLabel()) + `<div class="cmp-foot">${foot}</div>`, note: notes.join(' ') };
+}
+
+// Net Income per entity, summed over the range, from published statements.
+// Each published statement carries 13 months (the month, the 11 before it and
+// the same month last year), so the END month's statement usually covers the
+// whole range in one read; any month it doesn't cover falls back to that
+// month's own published statement. Returns { byId: { id: number|null } }.
+async function loadNetIncome(ids, keys) {
+  const endKey = keys[keys.length - 1];
+  const niOf = (statement) => {
+    const out = {};
+    const row = (statement || []).find((r) => r && r.kind === 'total' && /^net income$/i.test(String(r.label || '').trim()));
+    if (row && row.amounts) Object.entries(row.amounts).forEach(([k, v]) => { if (v != null && v !== '') out[k] = Number(v); });
+    return out;
+  };
+  const per = {};   // id -> { month: value }
+  ids.forEach((id) => { per[id] = {}; });
+  const endRes = await sb.from('pnl_reports').select('client_id, statement')
+    .in('client_id', ids).eq('period', endKey).eq('published', true);
+  if (endRes.error) throw endRes.error;
+  (endRes.data || []).forEach((r) => { if (per[r.client_id]) per[r.client_id] = niOf(r.statement); });
+
+  // Fall back month-by-month only where the end statement left gaps.
+  const gaps = [];
+  ids.forEach((id) => keys.forEach((k) => { if (per[id][k] == null) gaps.push([id, k]); }));
+  if (gaps.length) {
+    const gIds = [...new Set(gaps.map((g) => g[0]))];
+    const gKeys = [...new Set(gaps.map((g) => g[1]))];
+    const res = await sb.from('pnl_reports').select('client_id, period, statement')
+      .in('client_id', gIds).in('period', gKeys).eq('published', true);
+    if (res.error) throw res.error;
+    (res.data || []).forEach((r) => {
+      const v = niOf(r.statement)[r.period];
+      if (v != null && per[r.client_id] && per[r.client_id][r.period] == null) per[r.client_id][r.period] = v;
+    });
+  }
+  const byId = {};
+  ids.forEach((id) => {
+    byId[id] = keys.every((k) => per[id][k] != null) ? keys.reduce((s, k) => s + per[id][k], 0) : null;
+  });
+  return { byId };
 }
 
 // ---------------------------------------------------------------------
@@ -543,10 +615,153 @@ function injectStyles() {
   .cmp-foot{font-size:11.5px;color:var(--text3);margin-top:8px;line-height:1.45}
   .cmp-empty{padding:28px 10px;text-align:center;color:var(--text2);font-size:13.5px}
   .cmp-err{color:var(--red);font-size:13px;padding:10px 0}
+  .cmp-pdf{margin-left:auto;border:1px solid var(--navy);background:var(--bg2);color:var(--navy);border-radius:8px;padding:7px 13px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap}
+  .cmp-pdf:disabled{opacity:.45;cursor:default}
+  .cmp-pdf-msg{font-size:12px;color:var(--red);text-align:right;margin:-6px 0 6px}
+  .cmp-pdf-msg:empty{display:none}
   .cmp-retry{margin-left:8px;border:1px solid var(--border);background:var(--bg2);border-radius:6px;padding:3px 9px;cursor:pointer;font:inherit;font-size:12px}
   @media (max-width:640px){.cmp-month span{min-width:120px}.cmp-table .cmp-lbl{min-width:140px;max-width:170px}}
   `;
   document.head.appendChild(s);
+}
+
+// =====================================================================
+// PDF EXPORT — the table on screen, branded.
+// =====================================================================
+function cmpTableToPdf(table) {
+  const pad = (el) => { const m = /padding-left:\s*(\d+)px/.exec(el.getAttribute('style') || ''); return m ? +m[1] : 10; };
+  const cellOf = (el, kind) => {
+    const tag = el.querySelector('.cmp-miss-tag');
+    let text = tag ? (el.firstChild ? el.firstChild.textContent : '') + ' (not published)' : el.textContent;
+    const cell = { content: pdfText(text), styles: {} };
+    if (el.colSpan > 1) cell.colSpan = el.colSpan;
+    if (el.rowSpan > 1) cell.rowSpan = el.rowSpan;
+    cell._kind = kind;
+    cell._comb = el.classList.contains('cmp-comb');
+    cell._na = el.classList.contains('cmp-na');
+    cell._lbl = el.classList.contains('cmp-lbl');
+    if (cell._lbl && kind !== 'head') cell._indent = Math.max(0, pad(el) - 10);
+    return cell;
+  };
+  const head = [...table.querySelectorAll('thead tr')].map((tr) => [...tr.children].map((th) => cellOf(th, 'head')));
+  const body = [...table.querySelectorAll('tbody tr')].map((tr) => {
+    const kind = tr.classList.contains('cmp-hdr') ? 'section' : tr.classList.contains('cmp-key') ? 'key' : tr.classList.contains('cmp-tot') ? 'total' : 'row';
+    return [...tr.children].map((td) => cellOf(td, kind));
+  });
+  return { head, body };
+}
+
+async function downloadComparePdf() {
+  const btn = document.getElementById('cmpPdf');
+  const msg = document.getElementById('cmpPdfMsg');
+  const table = document.querySelector('#cmpBody table.cmp-table');
+  if (!table) return;
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.textContent = 'Building PDF\u2026';
+  if (msg) msg.textContent = '';
+  try {
+    const viewing = state.selected.includes(state.currentClientId) ? state.currentClientId : null;
+    const row = viewing ? await getClientRow(viewing) : null;
+    const [JsPDF, bgLogo, clientLogo] = await Promise.all([
+      ensurePdfLib(),
+      loadBaldGingerLogo(),
+      loadImageAsPng(row && row.logo_url),
+    ]);
+    const { head, body } = cmpTableToPdf(table);
+    const pairs = Math.max(1, (head[0].length - 1));          // entity (+ combined) columns
+    const orientation = pairs <= 3 ? 'portrait' : 'landscape';
+    const doc = new JsPDF({ orientation, unit: 'pt', format: 'letter' });
+    const W = doc.internal.pageSize.getWidth();
+    const M = PDF_MARGIN;
+    const avail = W - 2 * M;
+
+    const modeLabel = state.mode === 'stmt' ? 'Full P&L' : 'Prime Sheet lines';
+    const names = state.selected.map(clientName).join(', ');
+    const noteEl = document.getElementById('cmpNote');
+    const coverage = noteEl ? pdfText(noteEl.textContent) : '';
+    const startY = drawBrandHeader(doc, {
+      title: 'P&L Comparison',
+      subtitle: modeLabel + ' \u00b7 ' + rangeLabel(),
+      note: names + (coverage ? '  \u2014  ' + coverage : ''),
+      bgLogo, clientLogo,
+    });
+
+    // Column widths: label column, then a $ and % column per entity.
+    let labelW = Math.min(170, avail * 0.28);
+    let pairW = (avail - labelW) / pairs;
+    let horizontalPageBreak = false;
+    if (pairW < 62) { pairW = 72; horizontalPageBreak = true; }   // too many entities for one page width
+    const fontSize = pairW >= 95 ? 8 : pairW >= 75 ? 7.2 : 6.6;
+    const columnStyles = { 0: { cellWidth: labelW, halign: 'left' } };
+    for (let i = 0; i < pairs; i++) {
+      columnStyles[1 + i * 2] = { cellWidth: pairW * 0.64, halign: 'right' };
+      columnStyles[2 + i * 2] = { cellWidth: pairW * 0.36, halign: 'right' };
+    }
+    const COMB = [251, 243, 234], COMB_HEAD = [246, 230, 214], BAND = [243, 241, 236], KEY = [238, 241, 246];
+
+    doc.autoTable({
+      head, body, startY,
+      margin: { left: M, right: M, top: M, bottom: M + 18 },
+      theme: 'plain',
+      horizontalPageBreak, horizontalPageBreakRepeat: 0,
+      styles: { font: 'helvetica', fontSize, cellPadding: { top: 2.4, bottom: 2.4, left: 3, right: 3 }, textColor: [34, 38, 48], overflow: 'ellipsize' },
+      headStyles: { fontStyle: 'bold', textColor: PDF_NAVY, halign: 'center', valign: 'bottom', fillColor: BAND, overflow: 'linebreak' },
+      columnStyles,
+      didParseCell: (d) => {
+        const raw = d.cell.raw || {};
+        if (d.section === 'head') {
+          if (raw._lbl) { d.cell.styles.halign = 'left'; d.cell.styles.textColor = PDF_GREY; d.cell.styles.fontStyle = 'normal'; }
+          if (d.row.index === 1) { d.cell.styles.halign = 'right'; d.cell.styles.fontSize = fontSize - 1; d.cell.styles.textColor = [130, 136, 148]; }
+          if (raw._comb) d.cell.styles.fillColor = COMB_HEAD;
+          return;
+        }
+        const k = raw._kind;
+        if (raw._lbl) {
+          d.cell.styles.halign = 'left';
+          d.cell.styles.cellPadding = { top: 2.4, bottom: 2.4, left: 3 + (raw._indent || 0) * 0.8, right: 3 };
+        } else if (d.column.index % 2 === 0) {
+          d.cell.styles.textColor = [130, 136, 148];        // % columns
+        }
+        if (raw._comb) d.cell.styles.fillColor = COMB;
+        if (raw._na) d.cell.styles.fillColor = [246, 246, 246];
+        if (k === 'section') { d.cell.styles.fontStyle = 'bold'; d.cell.styles.textColor = PDF_NAVY; d.cell.styles.fillColor = BAND; }
+        else if (k === 'total') d.cell.styles.fontStyle = 'bold';
+        else if (k === 'key') {
+          d.cell.styles.fontStyle = 'bold';
+          if (d.column.index === 0 || d.column.index % 2 === 1) d.cell.styles.textColor = PDF_NAVY;
+          if (!raw._comb) d.cell.styles.fillColor = KEY;
+        }
+      },
+      didDrawCell: (d) => {
+        if (d.section !== 'body') return;
+        const k = d.cell.raw && d.cell.raw._kind;
+        if (k === 'total' || k === 'key') {
+          doc.setDrawColor(200, 204, 212); doc.setLineWidth(0.5);
+          doc.line(d.cell.x, d.cell.y, d.cell.x + d.cell.width, d.cell.y);
+        }
+      },
+    });
+
+    // Explanatory footnote under the table (last page).
+    const footEl = document.querySelector('#cmpBody .cmp-foot');
+    if (footEl) {
+      const H = doc.internal.pageSize.getHeight();
+      let y = (doc.lastAutoTable && doc.lastAutoTable.finalY ? doc.lastAutoTable.finalY : startY) + 14;
+      const lines = doc.splitTextToSize(pdfText(footEl.textContent), avail);
+      if (y + lines.length * 10 > H - M - 22) { doc.addPage(); y = M + 10; }
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(...PDF_GREY);
+      lines.forEach((ln, i) => doc.text(ln, M, y + i * 10));
+    }
+    drawFooters(doc);
+
+    const rangeTag = { m1: '', ytd: 'YTD', t3: 'T3', t12: 'T12' }[state.range] || '';
+    doc.save(pdfFileName(monthKey(state.endMonth), 'PL Comparison', state.mode === 'stmt' ? 'Full PL' : 'Prime Lines', rangeTag));
+  } catch (e) {
+    console.error('Compare PDF failed:', e);
+    if (msg) msg.textContent = 'Couldn\u2019t build the PDF: ' + (e.message || e);
+  } finally {
+    btn.disabled = false; btn.innerHTML = orig;
+  }
 }
 
 // =====================================================================

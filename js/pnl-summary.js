@@ -9,6 +9,7 @@
 // =====================================================================
 import { sb } from './config.js';
 import { getClientRow, loadImageAsPng } from './branding.js';
+import { ensurePdfLib, loadBaldGingerLogo, drawBrandHeader, drawFooters, pdfText, pdfFileName, PDF_NAVY, PDF_MARGIN } from './pdf-brand.js';
 
 // ---------------------------------------------------------------------
 // Section structure. pctBase is the category we divide by to get the row's
@@ -375,41 +376,8 @@ function renderClassTabs(classes) {
 
 // ---------------------------------------------------------------------
 // PDF export — exactly the table on screen (same month, same class tab),
-// as a crisp one-page PDF with the client's name and logo in the header.
-// jsPDF + AutoTable load on first click only, so the page itself stays light.
-// Text stays real text (selectable, sharp when printed), not a screenshot.
+// branded via pdf-brand.js (Bald Ginger + client logo, footer).
 // ---------------------------------------------------------------------
-const JSPDF_SRC = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
-const AUTOTABLE_SRC = 'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js';
-let pdfLibPromise = null;
-
-function loadScriptOnce(src) {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector('script[data-src="' + src + '"]')) { resolve(); return; }
-    const el = document.createElement('script');
-    el.src = src; el.async = true; el.dataset.src = src;
-    el.onload = () => resolve();
-    el.onerror = () => { el.remove(); reject(new Error('Could not load the PDF library \u2014 check your connection and try again.')); };
-    document.head.appendChild(el);
-  });
-}
-function ensurePdfLib() {
-  if (window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API.autoTable) return Promise.resolve(window.jspdf.jsPDF);
-  if (!pdfLibPromise) {
-    pdfLibPromise = loadScriptOnce(JSPDF_SRC)
-      .then(() => loadScriptOnce(AUTOTABLE_SRC))
-      .then(() => {
-        if (!(window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API.autoTable)) throw new Error('PDF library failed to initialize.');
-        return window.jspdf.jsPDF;
-      })
-      .catch((e) => { pdfLibPromise = null; throw e; });
-  }
-  return pdfLibPromise;
-}
-
-const PDF_NAVY = [27, 42, 75];
-const PDF_ORANGE = [216, 91, 49];
-
 // Turn the rendered <table> into AutoTable head/body, keeping colspans,
 // row kinds (section header / subtotal / computed) and variance colors.
 function tableToPdfRows(table) {
@@ -421,7 +389,7 @@ function tableToPdfRows(table) {
       if (m) color = [1, 3, 5].map((i) => parseInt(m[1].slice(i, i + 2), 16));
     }
     // The PDF's built-in font has no Unicode minus sign, so swap it for a hyphen.
-    const cell = { content: (td.textContent || '').replace(/\u2212/g, '-').replace(/\s+/g, ' ').trim() };
+    const cell = { content: pdfText(td.textContent) };
     if (td.colSpan > 1) cell.colSpan = td.colSpan;
     if (color) cell.styles = { textColor: color };
     return cell;
@@ -440,59 +408,6 @@ function tableToPdfRows(table) {
   return { head, body };
 }
 
-// The Bald Ginger logo in the repo (assets/Bald-Ginger_Color_HORZ.png) is the
-// color logo on a solid black background. On a white page that would print as
-// a black box, so knock the black out to transparent (soft edges preserved)
-// and trim the empty margin. The tagline's white letters sit on the orange
-// bar, so they survive. Resolves null if the image can't be loaded.
-let bgLogoPromise = null;
-function loadBaldGingerLogo() {
-  if (bgLogoPromise) return bgLogoPromise;
-  bgLogoPromise = loadImageAsPng(new URL('assets/Bald-Ginger_Color_HORZ.png', document.baseURI).href, 900)
-    .then((img) => new Promise((resolve) => {
-      if (!img) { resolve(null); return; }
-      const el = new Image();
-      el.onload = () => {
-        try {
-          const c = document.createElement('canvas');
-          c.width = img.w; c.height = img.h;
-          const g = c.getContext('2d');
-          g.drawImage(el, 0, 0);
-          const d = g.getImageData(0, 0, img.w, img.h); const px = d.data;
-          let x0 = img.w, y0 = img.h, x1 = -1, y1 = -1;
-          for (let i = 0; i < px.length; i += 4) {
-            const a = Math.max(px[i], px[i + 1], px[i + 2]);   // brightness = how far from black
-            if (a < 24) { px[i + 3] = 0; continue; }
-            // Solid strokes (brightness >= 170) stay fully opaque in their true
-            // color; only the anti-aliased edges fade, un-mixed from the black.
-            const alpha = Math.min(1, a / 170);
-            if (alpha < 1) {
-              px[i] = Math.min(255, px[i] / alpha); px[i + 1] = Math.min(255, px[i + 1] / alpha); px[i + 2] = Math.min(255, px[i + 2] / alpha);
-            }
-            px[i + 3] = Math.round(alpha * 255);
-            const p = i / 4, x = p % img.w, y = (p - x) / img.w;
-            if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
-          }
-          if (x1 < 0) { resolve(null); return; }
-          g.putImageData(d, 0, 0);
-          const w = x1 - x0 + 1, h = y1 - y0 + 1;
-          const out = document.createElement('canvas'); out.width = w; out.height = h;
-          out.getContext('2d').drawImage(c, x0, y0, w, h, 0, 0, w, h);
-          resolve({ dataUrl: out.toDataURL('image/png'), w, h });
-        } catch (e) { resolve(null); }
-      };
-      el.onerror = () => resolve(null);
-      el.src = img.dataUrl;
-    }))
-    .then((r) => { if (!r) bgLogoPromise = null; return r; });
-  return bgLogoPromise;
-}
-
-function pdfFileName(clientName, period, cls) {
-  const clean = (x) => String(x || '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-  return [period, clean(clientName), cls ? clean(cls) : '', 'Prime_Sheet'].filter(Boolean).join('_') + '.pdf';
-}
-
 async function downloadPrimeSheetPdf() {
   const btn = document.getElementById('pnlPdfBtn');
   const msg = document.getElementById('pnlPdfMsg');
@@ -509,37 +424,13 @@ async function downloadPrimeSheetPdf() {
       loadBaldGingerLogo(),
     ]);
     const doc = new JsPDF({ orientation: 'portrait', unit: 'pt', format: 'letter' });
-    const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
-    const M = 36;
-
-    // ── Brand band: Bald Ginger logo top-left, client logo top-right.
-    const BAND_H = 58;
-    if (bgLogo) {
-      const h = BAND_H, w = Math.min(bgLogo.w * (h / bgLogo.h), 200);
-      doc.addImage(bgLogo.dataUrl, 'PNG', M, M - 6, w, bgLogo.h * (w / bgLogo.w));
-    } else {
-      doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(...PDF_ORANGE);
-      doc.text('BALD GINGER', M, M + 22);
-    }
-    if (logo) {
-      const maxW = 160, maxH = BAND_H;
-      const k = Math.min(maxW / logo.w, maxH / logo.h);
-      const lw = logo.w * k, lh = logo.h * k;
-      doc.addImage(logo.dataUrl, 'PNG', W - M - lw, M - 6 + (BAND_H - lh) / 2, lw, lh);
-    }
-    doc.setDrawColor(...PDF_ORANGE); doc.setLineWidth(1.2);
-    doc.line(M, M + BAND_H + 4, W - M, M + BAND_H + 4);
-
-    // ── Title block.
-    const ty = M + BAND_H + 26;
-    doc.setTextColor(...PDF_NAVY);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(17);
-    doc.text(doc.splitTextToSize(clientName || 'Prime Sheet', W - 2 * M)[0], M, ty);
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(11);
-    doc.setTextColor(...PDF_ORANGE);
-    doc.text('Prime Sheet' + (selectedClass ? ' \u2014 ' + selectedClass : '') + ' \u00b7 ' + formatPeriodLabel(activeData.current), M, ty + 17);
-    doc.setFontSize(8.5); doc.setTextColor(110, 116, 128);
-    doc.text('vs prior month and same month last year', M, ty + 30);
+    const M = PDF_MARGIN;
+    const startY = drawBrandHeader(doc, {
+      title: clientName || 'Prime Sheet',
+      subtitle: 'Prime Sheet' + (selectedClass ? ' \u2014 ' + selectedClass : '') + ' \u00b7 ' + formatPeriodLabel(activeData.current),
+      note: 'vs prior month and same month last year',
+      bgLogo, clientLogo: logo,
+    });
 
     // ── The table.
     const { head, body } = tableToPdfRows(table);
@@ -548,7 +439,7 @@ async function downloadPrimeSheetPdf() {
     for (let i = 1; i <= 8; i++) columnStyles[i] = { halign: 'right', cellWidth: (i === 2 || i === 4 || i === 7) ? 38 : numW };
     doc.autoTable({
       head, body,
-      startY: ty + 42,
+      startY,
       margin: { left: M, right: M, top: M, bottom: M + 18 },
       theme: 'plain',
       styles: { font: 'helvetica', fontSize: 8, cellPadding: { top: 2.6, bottom: 2.6, left: 4, right: 4 }, textColor: [34, 38, 48], overflow: 'linebreak' },
@@ -582,18 +473,8 @@ async function downloadPrimeSheetPdf() {
       },
     });
 
-    // ── Footer on every page.
-    const pages = doc.internal.getNumberOfPages();
-    const stamp = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    for (let p = 1; p <= pages; p++) {
-      doc.setPage(p);
-      const fx = M;
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(130, 136, 148);
-      doc.text('Prepared by Bald Ginger  \u00b7  Accounting | Finance | Business Ops  \u00b7  Generated ' + stamp, fx, H - M + 6);
-      doc.text('Page ' + p + ' of ' + pages, W - M, H - M + 6, { align: 'right' });
-    }
-
-    doc.save(pdfFileName(clientName, activeData.current, selectedClass));
+    drawFooters(doc);
+    doc.save(pdfFileName(activeData.current, clientName, selectedClass, 'Prime Sheet'));
   } catch (e) {
     console.error('Prime Sheet PDF failed:', e);
     if (msg) msg.textContent = 'Couldn\u2019t build the PDF: ' + (e.message || e);
