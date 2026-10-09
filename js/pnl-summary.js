@@ -417,12 +417,17 @@ async function downloadPrimeSheetPdf() {
   btn.disabled = true; btn.textContent = 'Building PDF\u2026';
   if (msg) msg.textContent = '';
   try {
-    const clientName = (activeClient && activeClient.name) || '';
+    // Re-read the client row now, not at tab mount: a logo added while this
+    // tab is open lives in the shared cache, not in activeClient.
+    const row = (activeClient && activeClient.id) ? (await getClientRow(activeClient.id)) : null;
+    const cur = row || activeClient || {};
+    const clientName = cur.name || '';
     const [JsPDF, logo, bgLogo] = await Promise.all([
       ensurePdfLib(),
-      loadImageAsPng(activeClient && activeClient.logo_url),
+      loadImageAsPng(cur.logo_url, 900, { trim: true }),
       loadBaldGingerLogo(),
     ]);
+    if (cur.logo_url && !logo && msg) msg.textContent = 'The client logo couldn\u2019t be loaded, so this PDF was made without it.';
     const doc = new JsPDF({ orientation: 'portrait', unit: 'pt', format: 'letter' });
     const M = PDF_MARGIN;
     const startY = drawBrandHeader(doc, {

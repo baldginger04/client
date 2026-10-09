@@ -665,8 +665,9 @@ async function downloadComparePdf() {
     const [JsPDF, bgLogo, clientLogo] = await Promise.all([
       ensurePdfLib(),
       loadBaldGingerLogo(),
-      loadImageAsPng(row && row.logo_url),
+      loadImageAsPng(row && row.logo_url, 900, { trim: true }),
     ]);
+    if (row && row.logo_url && !clientLogo && msg) msg.textContent = 'The client logo couldn\u2019t be loaded, so this PDF was made without it.';
     const { head, body } = cmpTableToPdf(table);
     const pairs = Math.max(1, (head[0].length - 1));          // entity (+ combined) columns
     const orientation = pairs <= 3 ? 'portrait' : 'landscape';

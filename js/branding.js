@@ -77,7 +77,15 @@ function paint(host, row) {
   host.innerHTML = html;
 
   const img = host.querySelector('.client-brand-img');
-  if (img) img.addEventListener('error', () => { img.style.display = 'none'; });
+  if (img) {
+    img.addEventListener('error', () => { img.style.display = 'none'; });
+    // Many logos carry wide blank margins, which makes them render tiny.
+    // Swap in a margin-trimmed copy; if that fails, the original stays.
+    const token = renderToken;
+    loadImageAsPng(url, 600, { trim: true }).then((t) => {
+      if (t && token === renderToken && img.isConnected) img.src = t.dataUrl;
+    });
+  }
   if (!team) return;
 
   const file = host.querySelector('#clientBrandFile');
@@ -147,8 +155,9 @@ function removeStoredFile(url) {
  * Load an image (any format the browser can draw) and return it as a PNG
  * data URL with its natural size — what jsPDF needs. Resolves null if the
  * image can't be loaded or read (e.g. a CORS failure); callers just skip it.
+ * opts.trim: crop away transparent / near-white margins first.
  */
-export function loadImageAsPng(url, maxEdge = 600) {
+export function loadImageAsPng(url, maxEdge = 600, opts = {}) {
   return new Promise((resolve) => {
     if (!url) { resolve(null); return; }
     const img = new Image();
@@ -159,11 +168,33 @@ export function loadImageAsPng(url, maxEdge = 600) {
       try {
         const w0 = img.naturalWidth || img.width, h0 = img.naturalHeight || img.height;
         if (!w0 || !h0) { resolve(null); return; }
-        const k = Math.min(1, maxEdge / Math.max(w0, h0));
-        const w = Math.max(1, Math.round(w0 * k)), h = Math.max(1, Math.round(h0 * k));
+        // Crop box in source pixels (whole image unless trimming).
+        let sx = 0, sy = 0, sw = w0, sh = h0;
+        if (opts.trim) {
+          const probe = document.createElement('canvas');
+          probe.width = w0; probe.height = h0;
+          const pg = probe.getContext('2d');
+          pg.drawImage(img, 0, 0);
+          const px = pg.getImageData(0, 0, w0, h0).data;   // throws if CORS-tainted -> caught below
+          let x0 = w0, y0 = h0, x1 = -1, y1 = -1;
+          for (let y = 0; y < h0; y++) {
+            for (let x = 0; x < w0; x++) {
+              const i = (y * w0 + x) * 4;
+              const blank = px[i + 3] < 16 || (px[i] > 245 && px[i + 1] > 245 && px[i + 2] > 245);
+              if (!blank) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+            }
+          }
+          if (x1 >= 0) {
+            const padX = Math.round((x1 - x0 + 1) * 0.02), padY = Math.round((y1 - y0 + 1) * 0.02);
+            sx = Math.max(0, x0 - padX); sy = Math.max(0, y0 - padY);
+            sw = Math.min(w0, x1 + padX + 1) - sx; sh = Math.min(h0, y1 + padY + 1) - sy;
+          }
+        }
+        const k = Math.min(1, maxEdge / Math.max(sw, sh));
+        const w = Math.max(1, Math.round(sw * k)), h = Math.max(1, Math.round(sh * k));
         const c = document.createElement('canvas');
         c.width = w; c.height = h;
-        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        c.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
         resolve({ dataUrl: c.toDataURL('image/png'), w, h });
       } catch (e) { resolve(null); }
     };
