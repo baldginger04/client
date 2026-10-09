@@ -234,7 +234,56 @@
 }
 .page-header {
   margin-bottom: 1.5rem;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
 }
+.page-header-text { min-width: 0; }
+
+/* Client logo, top right of the page header (js/branding.js). */
+.client-brand {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: 45%;
+}
+.client-brand-img {
+  display: block;
+  max-height: 60px;
+  max-width: 220px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+.client-brand-actions {
+  display: flex;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text3);
+}
+.client-brand-actions button,
+.client-brand-add {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text3);
+  cursor: pointer;
+}
+.client-brand-actions button:hover { color: var(--text); text-decoration: underline; }
+.client-brand-add {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+}
+.client-brand-add:hover { color: var(--text); border-color: var(--text3); }
+.client-brand-msg { font-size: 11px; text-align: right; max-width: 240px; }
+.client-brand-msg:empty { display: none; }
 .page-title {
   font-family: var(--font-display);
   font-size: 28px;
@@ -338,6 +387,7 @@
     max-width: none;
   }
   .page-title { font-size: 23px; }
+  .client-brand-img { max-height: 40px; max-width: 120px; }
 
   /* The Prime Sheet table is 9 columns wide — let it scroll inside its
      card instead of forcing the whole page to scroll sideways. */
