@@ -69,19 +69,170 @@ export function unmountFinancials() {
 
 function renderUploadCard() {
   // Upload form retired — P&L, Balance Sheet and P&L Detail now come from
-  // QuickBooks. Hide the old upload card; give the team a standalone
-  // "Notify client" button at the top of the tab.
+  // QuickBooks. Hide the old upload card. The team gets a "close the month"
+  // bar at the top of the tab: pick a month, one click pulls all three
+  // reports from QuickBooks and publishes them, plus the standalone
+  // "Notify client" button.
   const card = document.getElementById('uploadCard');
   if (card) card.style.display = 'none';
   const pane = document.getElementById('tab-financials');
-  if (state.isTeam && pane && !document.getElementById('notifyBar')) {
-    const bar = document.createElement('div');
-    bar.id = 'notifyBar';
-    bar.style.cssText = 'display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-bottom:14px';
-    bar.innerHTML = '<span id="notifyMsg" style="font-size:12.5px;color:var(--text3)"></span>'
-      + '<button type="button" id="notifyClientBtn" style="border:1px solid #1B2A4B;background:#fff;color:#1B2A4B;border-radius:8px;padding:8px 16px;font-weight:700;font-size:13px;cursor:pointer">\u2709 Notify client</button>';
-    pane.insertBefore(bar, pane.firstChild);
-    document.getElementById('notifyClientBtn').addEventListener('click', notifyClient);
+  if (!pane) return;
+  const existing = document.getElementById('notifyBar');
+  if (!state.isTeam) { if (existing) existing.remove(); return; }
+  if (existing) {
+    // Bar survives client switches; clear the previous client's results.
+    const log = document.getElementById('pullAllLog');
+    if (log) { log.innerHTML = ''; log.style.display = 'none'; }
+    const nm = document.getElementById('notifyMsg');
+    if (nm) nm.textContent = '';
+    return;
+  }
+  const bar = document.createElement('section');
+  bar.id = 'notifyBar';
+  bar.className = 'card';
+  bar.style.cssText = 'margin-bottom:14px';
+  bar.innerHTML =
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+    + '<div style="font-weight:800;font-size:15px;color:var(--text)">Close the month</div>'
+    + '<input type="month" id="pullAllMonth" value="' + bfLastClosedMonth() + '" style="border:1px solid var(--border);background:var(--bg);border-radius:7px;padding:6px 8px;font-size:13px;color:var(--text)">'
+    + '<button type="button" id="pullAllBtn" style="border:0;background:#D85B31;color:#fff;border-radius:8px;padding:8px 16px;font-weight:700;font-size:13px;cursor:pointer">\u21ba Pull all from QuickBooks &amp; Publish</button>'
+    + '<span style="flex:1"></span>'
+    + '<span id="notifyMsg" style="font-size:12.5px;color:var(--text3)"></span>'
+    + '<button type="button" id="notifyClientBtn" style="border:1px solid #1B2A4B;background:#fff;color:#1B2A4B;border-radius:8px;padding:8px 16px;font-weight:700;font-size:13px;cursor:pointer">\u2709 Notify client</button>'
+    + '</div>'
+    + '<div style="font-size:12px;color:var(--text3);margin-top:6px">Pulls the P&amp;L, P&amp;L Detail and Balance Sheet for the month you pick and publishes all three to the client. Publishing the P&amp;L also refreshes the KPI Dashboard and Prime Sheet. It does not email the client \u2014 use Notify client for that.</div>'
+    + '<div id="pullAllLog" style="display:none;margin-top:10px;font-size:13px;line-height:1.7"></div>';
+  pane.insertBefore(bar, pane.firstChild);
+  document.getElementById('notifyClientBtn').addEventListener('click', notifyClient);
+  document.getElementById('pullAllBtn').addEventListener('click', pullAllAndPublish);
+  const mi = document.getElementById('pullAllMonth');
+  mi.addEventListener('click', () => { if (mi.showPicker) { try { mi.showPicker(); } catch (e) { /* ignore */ } } });
+}
+
+// ── One-click close: pull P&L, P&L Detail and Balance Sheet for one month
+// from QuickBooks and publish each. Runs the three one after another, not in
+// parallel, so a QuickBooks token refresh only ever happens once (three
+// simultaneous refreshes of the same token can leave the connection broken).
+// Each report succeeds or fails on its own; a failure never stops the others,
+// and clicking again simply re-pulls and re-publishes all three.
+async function qboInvoke(fn, body) {
+  const { data, error } = await sb.functions.invoke(fn, { body });
+  if (error) throw new Error(error.message || 'request failed');
+  if (data && data.error === 'not_connected') throw new Error('QuickBooks isn\u2019t connected for this client.');
+  if (data && data.error === 'reauth_needed') throw new Error('QuickBooks needs to be reconnected.');
+  if (!data || !data.ok) throw new Error((data && (data.message || data.error)) || 'no result');
+  return data;
+}
+
+function findRowAmount(rows, labels, key) {
+  const want = labels.map(pnlNorm);
+  const r = (rows || []).find((x) => want.includes(pnlNorm(x.label)));
+  if (!r) return null;
+  if (key && r.amounts) return r.amounts[key] != null ? Number(r.amounts[key]) : null;
+  return r.amount != null ? Number(r.amount) : null;
+}
+
+async function closePublishPnl(monthDate) {
+  const period = bsKey(monthDate);
+  const from = bsKey(bsAddMonths(monthDate, -12)) + '-01', to = bsLastDay(monthDate);
+  const data = await qboInvoke('qbo-pnl', { client_id: state.clientId, from, to });
+  const statement = data.statement || [];
+  if (!statement.length) throw new Error('QuickBooks returned an empty P&L for ' + bsMonthName(monthDate) + '.');
+  const mappings = await fetchMappings(state.clientId);
+  const classified = matchAccounts(data.rows || [], mappings, state.clientId);
+  await persistPnlData(state.clientId, classified, [period], null);
+  const { error } = await sb.from('pnl_reports').upsert({ client_id: state.clientId, period, statement, generated_by: state.userId, generated_at: new Date().toISOString(), published: true }, { onConflict: 'client_id,period' });
+  if (error) throw error;
+  const ni = findRowAmount(statement, ['Net Income', 'Net Profit', 'Net Earnings'], period);
+  return 'published' + (ni != null ? ' \u00b7 net income ' + bsFmt(ni) : '') + ' \u00b7 KPI Dashboard and Prime Sheet updated';
+}
+
+async function closePublishPd(monthDate) {
+  const period = bsKey(monthDate);
+  const data = await qboInvoke('qbo-pnl-detail', { client_id: state.clientId, from: period + '-01', to: bsLastDay(monthDate) });
+  const accounts = data.accounts || [];
+  const { error } = await sb.from('pnl_detail_reports').upsert({
+    client_id: state.clientId, period, accounts,
+    generated_by: state.userId, generated_at: new Date().toISOString(), published: true,
+  }, { onConflict: 'client_id,period' });
+  if (error) throw error;
+  return 'published \u00b7 ' + accounts.length + ' account' + (accounts.length === 1 ? '' : 's');
+}
+
+async function closePublishBs(monthDate) {
+  const period = bsKey(monthDate);
+  const data = await qboInvoke('qbo-bs', { client_id: state.clientId, as_of: bsLastDay(monthDate) });
+  const rows = data.rows || [];
+  if (!rows.length) throw new Error('QuickBooks returned an empty balance sheet.');
+  const { error } = await sb.from('bs_reports').upsert({
+    client_id: state.clientId, period, as_of: data.as_of,
+    rows, generated_by: state.userId, generated_at: new Date().toISOString(), published: true,
+  }, { onConflict: 'client_id,period' });
+  if (error) throw error;
+  // Balance check, shown as information only — it never blocks the publish.
+  const assets = findRowAmount(rows, ['Total Assets', 'TOTAL ASSETS']);
+  const le = findRowAmount(rows, ['Total Liabilities and Equity', 'TOTAL LIABILITIES AND EQUITY', 'Total Liabilities & Equity']);
+  if (assets != null && le != null) {
+    return Math.abs(assets - le) < 0.5
+      ? 'published \u00b7 balances (assets ' + bsFmt(assets) + ')'
+      : 'published \u00b7 <b style="color:#b93232">does not balance</b> \u2014 assets ' + bsFmt(assets) + ' vs liabilities &amp; equity ' + bsFmt(le);
+  }
+  return 'published';
+}
+
+async function pullAllAndPublish() {
+  const btn = document.getElementById('pullAllBtn');
+  const log = document.getElementById('pullAllLog');
+  const val = (document.getElementById('pullAllMonth') || {}).value || '';
+  if (!/^\d{4}-\d{2}$/.test(val)) { log.style.display = 'block'; log.innerHTML = '<span style="color:#b93232">Pick a month first.</span>'; return; }
+  const [y, m] = val.split('-').map(Number);
+  const monthDate = new Date(y, m - 1, 1);
+  if (monthDate > bsFirstOfMonth(new Date())) { log.style.display = 'block'; log.innerHTML = '<span style="color:#b93232">' + bsMonthName(monthDate) + ' hasn\u2019t started yet.</span>'; return; }
+  const clientAtStart = state.clientId;
+
+  const jobs = [
+    { id: 'pnl', label: 'Profit &amp; Loss', run: closePublishPnl },
+    { id: 'pd',  label: 'P&amp;L Detail',    run: closePublishPd },
+    { id: 'bs',  label: 'Balance Sheet',     run: closePublishBs },
+  ];
+  btn.disabled = true; btn.textContent = 'Working\u2026';
+  log.style.display = 'block';
+  log.innerHTML = '<div style="font-weight:700;margin-bottom:2px">' + bsMonthName(monthDate) + '</div>'
+    + jobs.map((j) => '<div id="pullAll_' + j.id + '"><span class="pa-icon" style="display:inline-block;width:20px;color:var(--text3)">\u2022</span><b>' + j.label + '</b> <span class="pa-msg" style="color:var(--text3)">waiting</span></div>').join('');
+  const setLine = (id, icon, color, html) => {
+    const el = document.getElementById('pullAll_' + id); if (!el) return;
+    el.querySelector('.pa-icon').textContent = icon; el.querySelector('.pa-icon').style.color = color;
+    el.querySelector('.pa-msg').innerHTML = html; el.querySelector('.pa-msg').style.color = color === '#1e7a45' ? 'var(--text2)' : color;
+  };
+  let ok = 0;
+  try {
+    for (const j of jobs) {
+      if (state.clientId !== clientAtStart) { setLine(j.id, '\u2013', 'var(--text3)', 'skipped \u2014 you switched clients'); continue; }
+      setLine(j.id, '\u2026', 'var(--text3)', 'pulling from QuickBooks\u2026');
+      try {
+        const msg = await j.run(monthDate);
+        ok++;
+        setLine(j.id, '\u2713', '#1e7a45', msg);
+      } catch (e) {
+        setLine(j.id, '\u2717', '#b93232', bsEsc(e.message || e));
+      }
+    }
+  } finally {
+    btn.disabled = false; btn.textContent = '\u21ba Pull all from QuickBooks & Publish';
+  }
+  const summary = document.createElement('div');
+  summary.style.cssText = 'margin-top:4px;font-weight:600;color:' + (ok === jobs.length ? '#1e7a45' : '#b93232');
+  summary.textContent = ok === jobs.length
+    ? 'All three published. The client can see them now \u2014 click Notify client when you\u2019re ready to email them.'
+    : ok + ' of ' + jobs.length + ' published. Fix the item marked \u2717 and click the button again (it safely re-publishes everything).';
+  log.appendChild(summary);
+
+  // Show the month just published in all three sections below.
+  if (state.clientId === clientAtStart) {
+    pnlMonth = monthDate; bsMonth = monthDate; pdMonth = monthDate;
+    const ps = document.getElementById('pnlSection'); if (ps) drawPnlSection(ps);
+    const bs = document.getElementById('bsSection'); if (bs) drawBsSection(bs);
+    const pd = document.getElementById('pdSection'); if (pd) drawPdSection(pd);
   }
 }
 

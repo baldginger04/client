@@ -13,6 +13,7 @@ import { mountDocuments, unmountDocuments } from './documents.js';
 import { mountProjections, unmountProjections } from './projections.js';
 import { mountHome as mountHomeView, unmountHome } from './home.js';
 import { mountCompare, unmountCompare } from './compare.js';
+import { applyClientBranding } from './branding.js';
 
 const LAST_TAB_KEY = 'bg_client_portal_last_tab';
 const DEFAULT_TAB = 'home';
@@ -357,6 +358,7 @@ function subscribeClientQuestionsBadge() {
 function showNoClients() {
   TABS.forEach((t) => { const el = $(`tab-${t}`); if (el) el.style.display = 'none'; });
   $('noClientsState').style.display = 'block';
+  applyClientBranding({ client: null, isTeam: false, visible: false });
   $('pageTitle').textContent = 'Welcome';
   $('pageSub').textContent = '';
 }
@@ -419,6 +421,12 @@ function updatePageHeader(client) {
     $('pageTitle').textContent = meta.title;
   }
   $('pageSub').textContent = meta.sub;
+  // Client logo, top right. Hidden on Home (it lists every client).
+  applyClientBranding({
+    client,
+    isTeam: !!(state.profile && state.profile.is_team),
+    visible: state.currentTab !== 'home',
+  });
 }
 
 async function mountCurrentTab() {

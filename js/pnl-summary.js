@@ -8,6 +8,7 @@
 // with the underlying account-level detail.
 // =====================================================================
 import { sb } from './config.js';
+import { getClientRow, loadImageAsPng } from './branding.js';
 
 // ---------------------------------------------------------------------
 // Section structure. pctBase is the category we divide by to get the row's
@@ -209,6 +210,7 @@ let activeData = null;
 let selectedMetric = 'h_food';
 let selectedClass = null;   // lodging_mixed only: which class/business unit is shown
 let allRowsCache = null;    // raw pnl_data rows kept so class switching needs no refetch
+let activeClient = null;    // clients row for the mounted client (name, logo_url) — used by the PDF
 
 // ---------------------------------------------------------------------
 // Entry points
@@ -219,12 +221,11 @@ export async function mountPnlSummary({ clientId }) {
 
   // Pick the per-client KPI template (default 'restaurant'). Failure to read
   // it must never break the sheet, so any error falls back to restaurant.
-  try {
-    const { data: cli } = await sb.from('clients').select('kpi_template').eq('id', clientId).single();
-    activeTemplate = TEMPLATES[cli && cli.kpi_template] || RESTAURANT_TEMPLATE;
-  } catch (_) {
-    activeTemplate = RESTAURANT_TEMPLATE;
-  }
+  // (Shared, cached read via branding.js; select('*') so it works whether or
+  // not newer columns such as logo_url exist yet.)
+  const cli = await getClientRow(clientId);
+  activeClient = cli || { id: clientId, name: '' };
+  activeTemplate = TEMPLATES[cli && cli.kpi_template] || RESTAURANT_TEMPLATE;
   // Ensure the Quick-look picker starts on a metric this template actually has.
   if (!activeTemplate.headline.some((m) => m.id === selectedMetric)) {
     selectedMetric = activeTemplate.headline[0].id;
@@ -232,7 +233,11 @@ export async function mountPnlSummary({ clientId }) {
 
   root.innerHTML = `
     <section class="card">
-      <h2 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin:0 0 4px">Prime Sheet</h2>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 4px">
+        <h2 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin:0">Prime Sheet</h2>
+        <button type="button" id="pnlPdfBtn" hidden style="margin-left:auto;border:1px solid #1B2A4B;background:#fff;color:#1B2A4B;border-radius:8px;padding:7px 14px;font-weight:700;font-size:13px;cursor:pointer">\u21e9 Download PDF</button>
+      </div>
+      <div id="pnlPdfMsg" style="font-size:12px;color:#b93232;text-align:right"></div>
       <p style="color:var(--text2);margin:0 0 18px;font-size:13px">Current month vs prior month and same month last year. Click any row for account-level detail.</p>
       <div id="pnl-class-tabs"></div>
       <div id="pnl-metric-picker"></div>
@@ -366,6 +371,177 @@ function renderClassTabs(classes) {
       computeAndRenderFromCache();
     });
   });
+}
+
+// ---------------------------------------------------------------------
+// PDF export — exactly the table on screen (same month, same class tab),
+// as a crisp one-page PDF with the client's name and logo in the header.
+// jsPDF + AutoTable load on first click only, so the page itself stays light.
+// Text stays real text (selectable, sharp when printed), not a screenshot.
+// ---------------------------------------------------------------------
+const JSPDF_SRC = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
+const AUTOTABLE_SRC = 'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js';
+let pdfLibPromise = null;
+
+function loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector('script[data-src="' + src + '"]')) { resolve(); return; }
+    const el = document.createElement('script');
+    el.src = src; el.async = true; el.dataset.src = src;
+    el.onload = () => resolve();
+    el.onerror = () => { el.remove(); reject(new Error('Could not load the PDF library \u2014 check your connection and try again.')); };
+    document.head.appendChild(el);
+  });
+}
+function ensurePdfLib() {
+  if (window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API.autoTable) return Promise.resolve(window.jspdf.jsPDF);
+  if (!pdfLibPromise) {
+    pdfLibPromise = loadScriptOnce(JSPDF_SRC)
+      .then(() => loadScriptOnce(AUTOTABLE_SRC))
+      .then(() => {
+        if (!(window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API.autoTable)) throw new Error('PDF library failed to initialize.');
+        return window.jspdf.jsPDF;
+      })
+      .catch((e) => { pdfLibPromise = null; throw e; });
+  }
+  return pdfLibPromise;
+}
+
+const PDF_NAVY = [27, 42, 75];
+const PDF_ORANGE = [216, 91, 49];
+
+// Turn the rendered <table> into AutoTable head/body, keeping colspans,
+// row kinds (section header / subtotal / computed) and variance colors.
+function tableToPdfRows(table) {
+  const cellOf = (td) => {
+    const span = td.querySelector('span[style*="color"]');
+    let color = null;
+    if (span) {
+      const m = /color:\s*(#[0-9a-fA-F]{6})/.exec(span.getAttribute('style') || '');
+      if (m) color = [1, 3, 5].map((i) => parseInt(m[1].slice(i, i + 2), 16));
+    }
+    // The PDF's built-in font has no Unicode minus sign, so swap it for a hyphen.
+    const cell = { content: (td.textContent || '').replace(/\u2212/g, '-').replace(/\s+/g, ' ').trim() };
+    if (td.colSpan > 1) cell.colSpan = td.colSpan;
+    if (color) cell.styles = { textColor: color };
+    return cell;
+  };
+  const head = [...table.querySelectorAll('thead tr')].map((tr) => [...tr.children].map(cellOf));
+  const body = [];
+  table.querySelectorAll('tbody tr').forEach((tr) => {
+    const kind = tr.classList.contains('pnl-sum-section-header') ? 'section'
+      : tr.classList.contains('pnl-sum-subtotal') ? 'subtotal'
+      : tr.classList.contains('pnl-sum-computed-row') ? 'computed' : 'row';
+    const cells = [...tr.children].map(cellOf);
+    cells.forEach((c) => { c.styles = Object.assign({}, c.styles); c._kind = kind; });
+    if (kind === 'section') cells[0].styles = Object.assign(cells[0].styles, { halign: 'left' });
+    body.push(cells);
+  });
+  return { head, body };
+}
+
+function pdfFileName(clientName, period, cls) {
+  const clean = (x) => String(x || '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return [period, clean(clientName), cls ? clean(cls) : '', 'Prime_Sheet'].filter(Boolean).join('_') + '.pdf';
+}
+
+async function downloadPrimeSheetPdf() {
+  const btn = document.getElementById('pnlPdfBtn');
+  const msg = document.getElementById('pnlPdfMsg');
+  const table = document.querySelector('#pnl-summary-content table.pnl-summary-table');
+  if (!table || !activeData) return;
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Building PDF\u2026';
+  if (msg) msg.textContent = '';
+  try {
+    const clientName = (activeClient && activeClient.name) || '';
+    const [JsPDF, logo] = await Promise.all([
+      ensurePdfLib(),
+      loadImageAsPng(activeClient && activeClient.logo_url),
+    ]);
+    const doc = new JsPDF({ orientation: 'portrait', unit: 'pt', format: 'letter' });
+    const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+    const M = 36;
+
+    // ── Header: client name + title on the left, client logo on the right.
+    let logoW = 0;
+    if (logo) {
+      const maxW = 150, maxH = 54;
+      const k = Math.min(maxW / logo.w, maxH / logo.h);
+      logoW = logo.w * k;
+      doc.addImage(logo.dataUrl, 'PNG', W - M - logoW, M - 4, logoW, logo.h * k);
+    }
+    const textW = W - 2 * M - (logoW ? logoW + 16 : 0);
+    doc.setTextColor(...PDF_NAVY);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(17);
+    doc.text(doc.splitTextToSize(clientName || 'Prime Sheet', textW)[0], M, M + 12);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(11);
+    doc.setTextColor(...PDF_ORANGE);
+    doc.text('Prime Sheet' + (selectedClass ? ' \u2014 ' + selectedClass : '') + ' \u00b7 ' + formatPeriodLabel(activeData.current), M, M + 30);
+    doc.setFontSize(8.5); doc.setTextColor(110, 116, 128);
+    doc.text('vs prior month and same month last year', M, M + 43);
+    doc.setDrawColor(...PDF_ORANGE); doc.setLineWidth(1.2);
+    doc.line(M, M + 58, W - M, M + 58);
+
+    // ── The table.
+    const { head, body } = tableToPdfRows(table);
+    const numW = 50;
+    const columnStyles = { 0: { halign: 'left', cellWidth: 'auto' } };
+    for (let i = 1; i <= 8; i++) columnStyles[i] = { halign: 'right', cellWidth: (i === 2 || i === 4 || i === 7) ? 38 : numW };
+    doc.autoTable({
+      head, body,
+      startY: M + 68,
+      margin: { left: M, right: M, top: M, bottom: M + 18 },
+      theme: 'plain',
+      styles: { font: 'helvetica', fontSize: 8, cellPadding: { top: 2.6, bottom: 2.6, left: 4, right: 4 }, textColor: [34, 38, 48], overflow: 'linebreak' },
+      headStyles: { fontStyle: 'bold', textColor: PDF_NAVY, halign: 'right', fontSize: 8 },
+      columnStyles,
+      didParseCell: (d) => {
+        if (d.section === 'head') {
+          if (d.column.index === 0) d.cell.styles.halign = 'left';
+          if (d.row.index === 0) { d.cell.styles.fillColor = [243, 241, 236]; }
+          else { d.cell.styles.fontSize = 7; d.cell.styles.textColor = [130, 136, 148]; }
+          return;
+        }
+        const kind = d.cell.raw && d.cell.raw._kind;
+        if (kind === 'section') {
+          d.cell.styles.fillColor = [243, 241, 236];
+          d.cell.styles.fontStyle = 'bold';
+          d.cell.styles.textColor = PDF_NAVY;
+          d.cell.styles.halign = 'left';
+        } else if (kind === 'subtotal' || kind === 'computed') {
+          d.cell.styles.fontStyle = 'bold';
+        }
+        if (d.column.index === 0 && kind === 'row') d.cell.styles.cellPadding = { top: 2.6, bottom: 2.6, left: 12, right: 4 };
+      },
+      didDrawCell: (d) => {
+        if (d.section !== 'body') return;
+        const kind = d.cell.raw && d.cell.raw._kind;
+        if (kind === 'subtotal' || kind === 'computed') {
+          doc.setDrawColor(200, 204, 212); doc.setLineWidth(0.5);
+          doc.line(d.cell.x, d.cell.y, d.cell.x + d.cell.width, d.cell.y);
+        }
+      },
+    });
+
+    // ── Footer on every page.
+    const pages = doc.internal.getNumberOfPages();
+    const stamp = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    for (let p = 1; p <= pages; p++) {
+      doc.setPage(p);
+      const fx = M;
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(130, 136, 148);
+      doc.text('Prepared by Bald Ginger \u00b7 Generated ' + stamp, fx, H - M + 6);
+      doc.text('Page ' + p + ' of ' + pages, W - M, H - M + 6, { align: 'right' });
+    }
+
+    doc.save(pdfFileName(clientName, activeData.current, selectedClass));
+  } catch (e) {
+    console.error('Prime Sheet PDF failed:', e);
+    if (msg) msg.textContent = 'Couldn\u2019t build the PDF: ' + (e.message || e);
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
 }
 
 export function unmountPnlSummary() {
@@ -835,6 +1011,12 @@ function renderTable() {
   });
 
   renderMetricPicker();
+
+  const pdfBtn = document.getElementById('pnlPdfBtn');
+  if (pdfBtn) {
+    pdfBtn.hidden = false;
+    if (!pdfBtn.dataset.bound) { pdfBtn.dataset.bound = '1'; pdfBtn.addEventListener('click', downloadPrimeSheetPdf); }
+  }
 }
 
 // ---------------------------------------------------------------------
