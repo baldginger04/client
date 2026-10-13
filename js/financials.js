@@ -1944,13 +1944,13 @@ function renderPdAccounts(sec, accounts, notesByKey, isPreview) {
 function renderPdExpanded(bx, acct, notes) {
   const txns = acct.txns || [];
   const txnHtml = txns.length ? ('<table style="width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px">'
-    + '<thead><tr style="color:#888;font-size:10.5px;text-transform:uppercase"><th style="text-align:left;padding:4px 8px">Date</th><th style="text-align:left;padding:4px 8px">Type</th><th style="text-align:left;padding:4px 8px">Name</th><th style="text-align:left;padding:4px 8px">Memo</th><th style="text-align:right;padding:4px 8px">Amount</th></tr></thead><tbody>'
+    + '<thead><tr style="color:#888;font-size:10.5px;text-transform:uppercase"><th style="text-align:left;padding:4px 8px">Date</th><th style="text-align:left;padding:4px 8px">Type</th><th style="text-align:left;padding:4px 8px">Name</th><th style="text-align:left;padding:4px 8px">Memo</th><th style="text-align:right;padding:4px 8px">Amount</th>' + ATT_TH + '</tr></thead><tbody>'
     + txns.map((t) => '<tr style="border-top:1px solid #f0f0f0">'
       + '<td style="padding:4px 8px;white-space:nowrap">' + bsEsc(t.date) + '</td>'
       + '<td style="padding:4px 8px">' + bsEsc(t.type) + (t.doc_num ? ' #' + bsEsc(t.doc_num) : '') + '</td>'
       + '<td style="padding:4px 8px">' + bsEsc(t.name) + '</td>'
       + '<td style="padding:4px 8px;color:#666">' + bsEsc(t.memo) + '</td>'
-      + '<td style="padding:4px 8px;text-align:right">' + bsFmt(t.amount) + '</td></tr>').join('')
+      + '<td style="padding:4px 8px;text-align:right">' + bsFmt(t.amount) + '</td>' + attCell(t) + '</tr>').join('')
     + '</tbody></table>') : '<div style="font-size:12.5px;color:var(--text3);margin-top:8px">No transactions.</div>';
 
   bx.innerHTML = txnHtml + renderPdNotes(acct, notes);
@@ -2040,6 +2040,9 @@ function renderPdNotes(acct, notes) {
 }
 
 function wirePdNotes(bx, acct) {
+  // Every redraw of this block passes through here, so paperclips are filled
+  // in (or restored) after each one. Cheap: results are cached per transaction.
+  attDecorate(bx);
   const key = pdKey(acct);
   const input = bx.querySelector('.pd-note-input');
   const msg = bx.querySelector('.pd-note-msg');
@@ -2314,6 +2317,130 @@ function pnlCollectRollup(accounts, label) {
   return (accounts || []).filter((a) => pnlSameAccount(a, label)
     || ((a.path || []).some((p) => pnlSameAccount(p, label))));
 }
+// ── Attachments (10/13/26) ─────────────────────────────────────────────────
+// A paperclip on any transaction that has a document attached in QuickBooks
+// (vendor invoice, receipt...). The files are copied into private storage by
+// the qbo-attachment-sync Edge Function; qbo-attachments says which rows have
+// files and hands out a 2-minute link to open one. Only clients with
+// clients.portal_attachments_enabled switched on get anything back — for
+// everyone else the column stays empty and, after the first answer, no further
+// calls are made.
+//
+// Rows need the QuickBooks transaction id (txn_id), which qbo-pnl-detail adds
+// from 10/13/26; published months saved before that get it from the nightly
+// sync. A row without one simply never shows a paperclip.
+const ATT_TH = '<th style="width:30px;padding:4px 4px"></th>';
+const attOff = {};          // clientId -> true once the server says the feature is off
+const attKnown = {};        // clientId|type|id -> [files] ([] = checked, none)
+const attFiles = {};        // button key -> [files], for the click handler
+let attWired = false;
+
+function attCell(t) {
+  const id = t && t.txn_id ? String(t.txn_id) : '';
+  if (!id) return '<td class="att-cell" style="padding:2px 4px"></td>';
+  return '<td class="att-cell" data-att-type="' + bsEsc(t.type || '') + '" data-att-id="' + bsEsc(id)
+    + '" style="padding:2px 4px;text-align:center;white-space:nowrap"></td>';
+}
+
+async function attDecorate(root) {
+  attWire();
+  const clientId = state.clientId;
+  if (!root || !clientId || attOff[clientId]) return;
+  const cells = Array.from(root.querySelectorAll('td.att-cell[data-att-id]'))
+    .filter((c) => c.getAttribute('data-att-done') !== '1');
+  if (!cells.length) return;
+
+  // Ask only about transactions not already checked this session.
+  const ask = [];
+  const seen = new Set();
+  cells.forEach((c) => {
+    const k = c.getAttribute('data-att-type') + '|' + c.getAttribute('data-att-id');
+    if (attKnown[clientId + '|' + k] || seen.has(k)) return;
+    seen.add(k);
+    ask.push({ type: c.getAttribute('data-att-type'), id: c.getAttribute('data-att-id') });
+  });
+  if (ask.length) {
+    try {
+      const { data, error } = await sb.functions.invoke('qbo-attachments', { body: { action: 'lookup', client_id: clientId, txns: ask } });
+      if (error || !data || !data.ok) return;          // paperclips are a convenience; fail quietly
+      if (data.enabled === false) { attOff[clientId] = true; return; }
+      ask.forEach((a) => {
+        const k = a.type + '|' + a.id;
+        attKnown[clientId + '|' + k] = (data.files && data.files[k]) || [];
+      });
+    } catch (e) { return; }
+  }
+  if (state.clientId !== clientId) return;               // switched clients while waiting
+
+  cells.forEach((c) => {
+    if (!c.isConnected) return;
+    const k = c.getAttribute('data-att-type') + '|' + c.getAttribute('data-att-id');
+    const list = attKnown[clientId + '|' + k];
+    if (!list) return;
+    c.setAttribute('data-att-done', '1');
+    if (!list.length) return;
+    const bkey = clientId + '|' + k;
+    attFiles[bkey] = list;
+    const label = list.length === 1 ? 'View attachment: ' + (list[0].name || 'file') : 'View ' + list.length + ' attachments';
+    c.innerHTML = '<button type="button" class="att-btn" data-att-key="' + bsEsc(bkey) + '" title="' + bsEsc(label) + '" aria-label="' + bsEsc(label) + '"'
+      + ' style="border:0;background:none;cursor:pointer;padding:2px 4px;font-size:14px;line-height:1;color:#D85B31">📎'
+      + (list.length > 1 ? '<span style="font-size:10.5px;font-weight:700;margin-left:1px">' + list.length + '</span>' : '')
+      + '</button>';
+  });
+}
+
+function attWire() {
+  if (attWired) return;
+  attWired = true;
+  document.addEventListener('click', (e) => {
+    const one = e.target.closest && e.target.closest('.att-open');
+    if (one) { e.preventDefault(); e.stopPropagation(); attOpen(one.getAttribute('data-att-file'), one); return; }
+    const btn = e.target.closest && e.target.closest('.att-btn');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const list = attFiles[btn.getAttribute('data-att-key')] || [];
+    if (list.length === 1) { attOpen(list[0].id, btn); return; }
+    // Several files on one transaction: list them in a row underneath.
+    const tr = btn.closest('tr');
+    const next = tr && tr.nextElementSibling;
+    if (next && next.classList.contains('att-list-row')) { next.remove(); return; }
+    if (!tr) return;
+    const row = document.createElement('tr');
+    row.className = 'att-list-row';
+    row.innerHTML = '<td colspan="' + tr.children.length + '" style="padding:2px 8px 8px 8px;text-align:right">'
+      + list.map((f) => '<button type="button" class="att-open" data-att-file="' + bsEsc(f.id) + '" style="border:1px solid var(--border);background:var(--bg);border-radius:6px;padding:4px 9px;margin:2px 0 2px 6px;font-size:12px;cursor:pointer">📎 ' + bsEsc(f.name || 'file') + '</button>').join('')
+      + '</td>';
+    tr.after(row);
+  });
+}
+
+async function attOpen(attachmentId, el) {
+  if (!attachmentId) return;
+  // Open the tab now, while the click still counts as a user action — browsers
+  // block windows opened after a network wait.
+  let w = null;
+  try { w = window.open('', '_blank'); } catch (e) { w = null; }
+  if (w) { try { w.document.title = 'Opening…'; w.document.body.innerHTML = '<p style="font-family:sans-serif;color:#666;padding:24px">Opening attachment…</p>'; } catch (e) { /* ignore */ } }
+  if (el) el.style.opacity = '0.5';
+  try {
+    const { data, error } = await sb.functions.invoke('qbo-attachments', { body: { action: 'url', client_id: state.clientId, attachment_id: attachmentId } });
+    if (error) throw new Error(error.message || 'request failed');
+    if (!data || !data.ok || !data.url) throw new Error((data && (data.message || data.error)) || 'no link');
+    if (w && !w.closed) { w.location.href = data.url; }
+    else {
+      const a = document.createElement('a');
+      a.href = data.url; a.target = '_blank'; a.rel = 'noopener';
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+  } catch (err) {
+    if (w && !w.closed) w.close();
+    alert('Couldn’t open the attachment: ' + (err.message || err));
+  } finally {
+    if (el) el.style.opacity = '';
+  }
+}
+
 function pnlTxnTable(txns, withAccount) {
   if (!txns.length) return '';
   const capped = txns.slice(0, PNL_ROLLUP_MAX_TXNS);
@@ -2321,14 +2448,14 @@ function pnlTxnTable(txns, withAccount) {
   return '<table style="width:100%;border-collapse:collapse;font-size:12.5px">'
     + '<thead><tr style="color:#888;font-size:10.5px;text-transform:uppercase"><th style="text-align:left;padding:4px 8px">Date</th><th style="text-align:left;padding:4px 8px">Type</th>'
     + (withAccount ? '<th style="text-align:left;padding:4px 8px">Account</th>' : '')
-    + '<th style="text-align:left;padding:4px 8px">Name</th><th style="text-align:left;padding:4px 8px">Memo</th><th style="text-align:right;padding:4px 8px">Amount</th></tr></thead><tbody>'
+    + '<th style="text-align:left;padding:4px 8px">Name</th><th style="text-align:left;padding:4px 8px">Memo</th><th style="text-align:right;padding:4px 8px">Amount</th>' + ATT_TH + '</tr></thead><tbody>'
     + capped.map((t) => '<tr style="border-top:1px solid #f0f0f0">'
       + '<td style="padding:4px 8px;white-space:nowrap">' + bsEsc(t.date) + '</td>'
       + '<td style="padding:4px 8px">' + bsEsc(t.type) + (t.doc_num ? ' #' + bsEsc(t.doc_num) : '') + '</td>'
       + (withAccount ? '<td style="padding:4px 8px;color:#666">' + bsEsc(t.account || '') + '</td>' : '')
       + '<td style="padding:4px 8px">' + bsEsc(t.name) + '</td>'
       + '<td style="padding:4px 8px;color:#666">' + bsEsc(t.memo) + '</td>'
-      + '<td style="padding:4px 8px;text-align:right">' + bsFmt(t.amount) + '</td></tr>').join('')
+      + '<td style="padding:4px 8px;text-align:right">' + bsFmt(t.amount) + '</td>' + attCell(t) + '</tr>').join('')
     + '</tbody></table>'
     + (more > 0 ? '<div style="font-size:11.5px;color:var(--text3);margin-top:6px">Showing the first ' + PNL_ROLLUP_MAX_TXNS + ' of ' + txns.length + ' transactions \u2014 open the individual account lines for the rest.</div>' : '');
 }
@@ -2401,6 +2528,7 @@ function wirePnlDrill(container) {
         ? pnlRollupHtml(pnlCollectRollup(accounts, match), stmtAmt, plabel, match)
         : pnlDrillHtml(pnlFindAcct(accounts, match), stmtAmt, plabel, mode, match);
       drill.firstElementChild.innerHTML = '<div style="font-weight:700;font-size:12px;margin-bottom:4px">' + bsEsc(tr.getAttribute('data-label')) + ' \u2014 ' + bsEsc(plabel) + '</div>' + inner;
+      attDecorate(drill);
     } catch (err) {
       if (drill.isConnected) drill.firstElementChild.innerHTML = '<div style="font-size:12.5px;color:#b93232">Couldn\u2019t load transactions: ' + bsEsc(err.message || err) + '</div>';
     }
