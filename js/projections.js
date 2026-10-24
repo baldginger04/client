@@ -1056,19 +1056,42 @@ async function renderBudgetPanel(el, monthRows) {
   };
   const fmtPct = (g) => (g * 100).toFixed(1).replace(/\.0$/, '');
 
-  box.innerHTML = order.map((cat) => {
+  // Week / month toggle (current month only; past months always show the month).
+  // The choice is remembered per browser.
+  if (!store.budgetView) {
+    let saved = null;
+    try { saved = localStorage.getItem('pjBudgetView'); } catch (_) { /* storage blocked */ }
+    store.budgetView = saved === 'month' ? 'month' : 'week';
+  }
+  const view = isCurrentMonth ? store.budgetView : 'month';
+  const monthLabelTxt = isCurrentMonth ? 'Month to date' : monthName(store.month);
+  const toggle = isCurrentMonth ? `
+    <div class="pj-bview" role="tablist">
+      <button data-bview="week" class="${view === 'week' ? 'on' : ''}">This week</button>
+      <button data-bview="month" class="${view === 'month' ? 'on' : ''}">This month</button>
+    </div>` : '';
+
+  box.innerHTML = toggle + order.map((cat) => {
     const g = goals[cat];
     const label = (CATS.find((cc) => cc.key === cat) || {}).label || cat;
     const mB = baseMonth[cat] * g, wB = baseWeek[cat] * g;
+    const body = view === 'week'
+      ? row('This week', wB, weekSpent[cat]) + (cat === 'lbw' ? subLine('This week', weekSub) : '')
+      : row(monthLabelTxt, mB, monthSpent[cat]) + (cat === 'lbw' ? subLine(monthLabelTxt, monthSub) : '');
     return `<div class="pj-budgets">
       <div class="pj-budgets-h">${label} budget <span>${fmtPct(g)}% of sales</span></div>
-      ${isCurrentMonth ? row('This week', wB, weekSpent[cat]) : ''}
-      ${row(isCurrentMonth ? 'Month to date' : monthName(store.month), mB, monthSpent[cat])}
-      ${cat === 'lbw' ? (isCurrentMonth ? subLine('This week', weekSub) : '') + subLine(isCurrentMonth ? 'Month to date' : 'Month', monthSub) : ''}
+      ${body}
     </div>`;
   }).join('') + (usedActual
     ? `<div class="pj-mg-note">Budget reflects the sales that actually posted on days QuickBooks has closed, and the projection on days it hasn't.</div>`
     : '');
+
+  box.querySelectorAll('[data-bview]').forEach((b) => b.addEventListener('click', () => {
+    if (store.budgetView === b.dataset.bview) return;
+    store.budgetView = b.dataset.bview;
+    try { localStorage.setItem('pjBudgetView', store.budgetView); } catch (_) { /* storage blocked */ }
+    renderBudgetPanel(el, monthRows);
+  }));
 }
 
 async function loadEntries(el, cats) {
@@ -1409,6 +1432,10 @@ function pjStyles() {
     #tab-projections .pj-empty-t{font-family:var(--font-display);font-weight:700;font-size:17px;color:var(--text2)}
     #tab-projections .pj-empty-s{font-size:13px;margin-top:5px}
     #tab-projections .pj-budgets{background:var(--bg);border:1px solid var(--border);border-radius:var(--r-lg);padding:16px 18px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
+    #tab-projections .pj-bview{display:inline-flex;border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:12px;background:var(--bg)}
+    #tab-projections .pj-bview button{border:0;background:transparent;font-family:var(--font-display);font-weight:700;font-size:13px;color:var(--text2);padding:8px 16px;cursor:pointer}
+    #tab-projections .pj-bview button+button{border-left:1px solid var(--border)}
+    #tab-projections .pj-bview button.on{background:var(--navy);color:#fff}
     #tab-projections .pj-budgets-h{font-family:var(--font-display);font-weight:800;font-size:14px;color:var(--text);margin-bottom:12px}
     #tab-projections .pj-budgets-h span{font-family:var(--font-body);font-weight:600;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.03em;margin-left:6px}
     #tab-projections .pj-brow{display:flex;align-items:center;gap:16px;padding:10px 0;border-top:1px solid var(--border);flex-wrap:wrap}
