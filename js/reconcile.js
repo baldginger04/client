@@ -20,6 +20,29 @@ function money(n) { return '$' + (Number(n) || 0).toLocaleString('en-US', { maxi
 function money2(n) { return '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function fmtDate(s) { return s ? new Date(s + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'; }
+const CAT_LABEL = { food: 'Food', lbw: 'LBW' };
+// Amount to show for a QBO bill: the Food + LBW portion (older reports only carried foodAmount).
+function billAmt(x) { return x.amount != null ? x.amount : x.foodAmount; }
+// Category tag(s) for a row: bills carry `categories`, log rows carry `category`.
+function tagsFor(x) {
+  const cats = Array.isArray(x.categories) ? x.categories : (x.category ? [x.category] : []);
+  return cats.map((c) => `<em class="rc-tag ${esc(c)}">${esc(CAT_LABEL[c] || c)}</em>`).join('');
+}
+// Per-category strip under the summary cards (Food / LBW).
+function catStrip(s, forClient) {
+  const by = s && s.byCategory;
+  if (!by) return '';
+  const cats = (s.categories || Object.keys(by)).filter((c) => by[c]);
+  if (!cats.length) return '';
+  return `<div class="rc-cats">` + cats.map((c) => {
+    const b = by[c];
+    const miss = b.missingCount
+      ? `<span class="bad">${b.missingCount} not recorded · ${money(b.missingTotal)}</span>`
+      : `<span class="ok">all recorded</span>`;
+    const logged = forClient ? '' : ` · logged ${b.loggedCount} (${money(b.loggedTotal)})`;
+    return `<div class="rc-cat"><b>${esc(CAT_LABEL[c] || c)}</b><span>${b.qboCount} in the books (${money(b.qboTotal)})${logged}</span>${miss}</div>`;
+  }).join('') + `</div>`;
+}
 
 export async function mountReconcile({ container, clientId, userId, isTeam }) {
   ctx = { clientId, userId, isTeam: !!isTeam };
@@ -32,7 +55,7 @@ export async function mountReconcile({ container, clientId, userId, isTeam }) {
       <div class="rc-wrap">
         <div class="rc-head">
           <div class="pj-title">Month-end review</div>
-          <div class="pj-sub">Pull this client's food-coded bills from QuickBooks, flag what wasn't recorded in the receiving log, then publish it for the client. Nothing is written back to the log.</div>
+          <div class="pj-sub">Pull this client's Food and LBW bills from QuickBooks, flag what wasn't recorded in the receiving log, then publish it for the client. Nothing is written back to the log.</div>
         </div>
         <div class="rc-card" id="rcConn"><div class="rc-loading">Checking QuickBooks connection…</div></div>
         <div id="rcBody"></div>
@@ -99,11 +122,11 @@ async function loadClientReport() {
     <div class="rc-sec">
       <div class="rc-sec-h bad">Invoices not recorded in the receiving log — ${missing.length}</div>
       <div class="rc-sec-note">These are in the accounting system but were never entered in the log. Please record invoices as they arrive so this stays clear.</div>
-      ${rows(missing.map((x) => ({ vendor: x.vendor, date: x.date, inv: x.docNumber, amount: x.foodAmount })), 'bad')}
+      ${rows(missing.map((x) => ({ vendor: x.vendor, date: x.date, inv: x.docNumber, amount: billAmt(x), tags: tagsFor(x) })), 'bad')}
     </div>`
     : `<div class="rc-sec"><div class="rc-sec-h ok">✓ Every invoice in the books was recorded in the receiving log. Nice work.</div></div>`;
   const when = rep.generated_at ? `<div class="rc-acc">Published ${new Date(rep.generated_at).toLocaleDateString()}</div>` : '';
-  out.innerHTML = cards + body + when;
+  out.innerHTML = cards + catStrip(s, true) + body + when;
 }
 
 /* ============================ TEAM ============================ */
@@ -127,7 +150,7 @@ async function renderConn() {
     el.innerHTML = `
       <div class="rc-row">
         <div><div class="rc-t"><span class="rc-dot"></span>Connect QuickBooks</div>
-          <div class="rc-s">Link this client's QuickBooks so month-end review can pull its food-coded bills.</div></div>
+          <div class="rc-s">Link this client's QuickBooks so month-end review can pull its Food and LBW bills.</div></div>
         <button class="rc-btn" id="rcConnect">Connect</button>
       </div>`;
     el.querySelector('#rcConnect').addEventListener('click', startConnect);
@@ -176,32 +199,37 @@ function renderResult(out, d) {
   const s = d.summary;
   const cards = `
     <div class="rc-cards">
-      <div class="rc-c"><span>QBO food invoices</span><b>${s.qboCount}</b><i>${money(s.qboTotal)}</i></div>
+      <div class="rc-c"><span>QBO invoices</span><b>${s.qboCount}</b><i>${money(s.qboTotal)}</i></div>
       <div class="rc-c"><span>Logged</span><b>${s.loggedCount}</b><i>${money(s.loggedTotal)}</i></div>
       <div class="rc-c ok"><span>Matched</span><b>${s.matchedCount}</b><i>&nbsp;</i></div>
       <div class="rc-c ${s.missingCount ? 'bad' : 'ok'}"><span>Missing from log</span><b>${s.missingCount}</b><i>${money(s.missingTotal)}</i></div>
     </div>`;
   const missing = d.missingFromLog.length ? `
     <div class="rc-sec">
-      <div class="rc-sec-h bad">⚠ In QuickBooks (food) but not in the receiving log — ${d.missingFromLog.length}</div>
-      ${rows(d.missingFromLog.map((x) => ({ vendor: x.vendor, date: x.date, inv: x.docNumber, amount: x.foodAmount })), 'bad')}
-    </div>` : `<div class="rc-sec"><div class="rc-sec-h ok">✓ Every food invoice in QuickBooks was logged.</div></div>`;
+      <div class="rc-sec-h bad">⚠ In QuickBooks but not in the receiving log — ${d.missingFromLog.length}</div>
+      ${rows(d.missingFromLog.map((x) => ({ vendor: x.vendor, date: x.date, inv: x.docNumber, amount: billAmt(x), tags: tagsFor(x) })), 'bad')}
+    </div>` : `<div class="rc-sec"><div class="rc-sec-h ok">✓ Every invoice in QuickBooks was logged.</div></div>`;
   const extra = d.loggedNotInQbo.length ? `
     <div class="rc-sec">
       <div class="rc-sec-h warn">Logged but not found in QuickBooks — ${d.loggedNotInQbo.length}</div>
-      <div class="rc-sec-note">Likely a bill not yet booked, coded to a non-food account, or a near-miss on the match. Won't be shown to the client.</div>
-      ${rows(d.loggedNotInQbo.map((x) => ({ vendor: x.vendor, date: x.date, inv: x.invoice_number, amount: x.amount })), 'warn')}
+      <div class="rc-sec-note">Likely a bill not yet booked, coded to an account outside Food/LBW, or a near-miss on the match. Won't be shown to the client.</div>
+      ${rows(d.loggedNotInQbo.map((x) => ({ vendor: x.vendor, date: x.date, inv: x.invoice_number, amount: x.amount, tags: tagsFor(x) })), 'warn')}
     </div>` : '';
-  const accNote = d.foodAccounts && d.foodAccounts.length
-    ? `<div class="rc-acc">Food accounts pulled: ${d.foodAccounts.map((a) => esc(a)).join(' · ')}</div>`
-    : `<div class="rc-acc bad">No accounts classified as food_cogs for this client — check the COA mappings.</div>`;
+  const acc = d.accounts || { food: d.foodAccounts || [] };
+  const cats = d.categories || Object.keys(acc);
+  const accNote = cats.map((c) => {
+    const list = acc[c] || [];
+    return list.length
+      ? `<div class="rc-acc">${esc(CAT_LABEL[c] || c)} accounts pulled: ${list.map((a) => esc(a)).join(' · ')}</div>`
+      : `<div class="rc-acc bad">No ${esc(CAT_LABEL[c] || c)} accounts found for this client — check the COA mappings.</div>`;
+  }).join('');
   const publish = `
     <div class="rc-publish">
       <div><div class="rc-pt">Publish to client</div><div class="rc-ps">Posts this ${monthName(month)} review to the client's portal (the "not recorded" list only).</div></div>
       <button class="rc-btn" id="rcPublish">Publish</button>
       <span class="rc-pmsg" id="rcPubMsg"></span>
     </div>`;
-  out.innerHTML = cards + missing + extra + accNote + publish;
+  out.innerHTML = cards + catStrip(s, false) + missing + extra + accNote + publish;
   out.querySelector('#rcPublish').addEventListener('click', publishReport);
 }
 
@@ -231,7 +259,7 @@ function rows(list, tone) {
   return `<div class="rc-table">` + list.map((r) => `
     <div class="rc-tr ${tone}">
       <div class="rc-td-date">${fmtDate(r.date)}</div>
-      <div class="rc-td-vend">${esc(r.vendor || '—')}${r.inv ? `<span>#${esc(r.inv)}</span>` : ''}</div>
+      <div class="rc-td-vend">${r.tags || ''}${esc(r.vendor || '—')}${r.inv ? `<span>#${esc(r.inv)}</span>` : ''}</div>
       <div class="rc-td-amt">${money2(r.amount)}</div>
     </div>`).join('') + `</div>`;
 }
@@ -309,6 +337,14 @@ function rcStyles() {
     #tab-projections .rc-td-vend{flex:1;min-width:0;font-size:13.5px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     #tab-projections .rc-td-vend span{color:var(--text3);font-weight:500;margin-left:6px;font-size:12px}
     #tab-projections .rc-td-amt{font-family:var(--font-display);font-weight:800;font-size:14px;color:var(--text);flex:none}
+    #tab-projections .rc-cats{display:flex;flex-direction:column;gap:6px;margin:-6px 0 18px}
+    #tab-projections .rc-cat{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--text3)}
+    #tab-projections .rc-cat b{font-family:var(--font-display);font-weight:800;color:var(--text);min-width:40px}
+    #tab-projections .rc-cat .bad{color:var(--red);font-weight:700}
+    #tab-projections .rc-cat .ok{color:var(--green);font-weight:700}
+    #tab-projections .rc-tag{display:inline-block;font-style:normal;font-size:10.5px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;padding:1px 6px;border-radius:4px;margin-right:6px;vertical-align:1px;background:var(--bg2,#eef1f6);color:var(--text2)}
+    #tab-projections .rc-tag.lbw{background:#efe7f7;color:#6b3fa0}
+    #tab-projections .rc-tag.food{background:#e8f3ec;color:#2f7a4a}
     #tab-projections .rc-acc{margin-top:12px;font-size:11.5px;color:var(--text3);line-height:1.5}
     #tab-projections .rc-acc.bad{color:var(--red)}
     #tab-projections .rc-publish{margin-top:20px;padding-top:18px;border-top:1px dashed var(--border);display:flex;align-items:center;gap:14px;flex-wrap:wrap}
