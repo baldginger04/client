@@ -20,12 +20,13 @@ function money(n) { return '$' + (Number(n) || 0).toLocaleString('en-US', { maxi
 function money2(n) { return '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function fmtDate(s) { return s ? new Date(s + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'; }
-const CAT_LABEL = { food: 'Food', lbw: 'LBW' };
+const CAT_LABEL = { food: 'Food', lbw: 'LBW', liquor: 'Liquor', beer: 'Beer', wine: 'Wine', bar: 'Bar consumables' };
 // Amount to show for a QBO bill: the Food + LBW portion (older reports only carried foodAmount).
 function billAmt(x) { return x.amount != null ? x.amount : x.foodAmount; }
-// Category tag(s) for a row: bills carry `categories`, log rows carry `category`.
+// Category tag(s) for a row: bills carry `tags` (Food + LBW buckets) or older
+// `categories`; log rows carry `category`.
 function tagsFor(x) {
-  const cats = Array.isArray(x.categories) ? x.categories : (x.category ? [x.category] : []);
+  const cats = Array.isArray(x.tags) ? x.tags : Array.isArray(x.categories) ? x.categories : (x.category ? [x.category] : []);
   return cats.map((c) => `<em class="rc-tag ${esc(c)}">${esc(CAT_LABEL[c] || c)}</em>`).join('');
 }
 // Per-category strip under the summary cards (Food / LBW).
@@ -40,7 +41,15 @@ function catStrip(s, forClient) {
       ? `<span class="bad">${b.missingCount} not recorded · ${money(b.missingTotal)}</span>`
       : `<span class="ok">all recorded</span>`;
     const logged = forClient ? '' : ` · logged ${b.loggedCount} (${money(b.loggedTotal)})`;
-    return `<div class="rc-cat"><b>${esc(CAT_LABEL[c] || c)}</b><span>${b.qboCount} in the books (${money(b.qboTotal)})${logged}</span>${miss}</div>`;
+    const bd = b.breakdown ? Object.keys(CAT_LABEL).filter((k) => b.breakdown[k]) : [];
+    const sub = bd.length ? `<div class="rc-cat-sub">${bd.map((k) => {
+      const v = b.breakdown[k];
+      const parts = [`${money(v.qboTotal)} in books`];
+      if (!forClient) parts.push(`${money(v.loggedTotal)} logged`);
+      if (v.missingTotal) parts.push(`<span class="bad">${money(v.missingTotal)} not recorded</span>`);
+      return `<span><em class="rc-tag ${esc(k)}">${esc(CAT_LABEL[k])}</em>${parts.join(' · ')}</span>`;
+    }).join('')}</div>` : '';
+    return `<div class="rc-cat"><b>${esc(CAT_LABEL[c] || c)}</b><span>${b.qboCount} in the books (${money(b.qboTotal)})${logged}</span>${miss}</div>${sub}`;
   }).join('') + `</div>`;
 }
 
@@ -343,7 +352,13 @@ function rcStyles() {
     #tab-projections .rc-cat .bad{color:var(--red);font-weight:700}
     #tab-projections .rc-cat .ok{color:var(--green);font-weight:700}
     #tab-projections .rc-tag{display:inline-block;font-style:normal;font-size:10.5px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;padding:1px 6px;border-radius:4px;margin-right:6px;vertical-align:1px;background:var(--bg2,#eef1f6);color:var(--text2)}
-    #tab-projections .rc-tag.lbw{background:#efe7f7;color:#6b3fa0}
+    #tab-projections .rc-tag.lbw{background:#eef1f8;color:var(--navy)}
+    #tab-projections .rc-tag.liquor{background:#efe7f7;color:#6b3fa0}
+    #tab-projections .rc-tag.beer{background:#fbefd9;color:#8a5a00}
+    #tab-projections .rc-tag.wine{background:#f8e6ea;color:#8c2a45}
+    #tab-projections .rc-tag.bar{background:#e4f2f1;color:#1f6b66}
+    #tab-projections .rc-cat-sub{display:flex;flex-direction:column;gap:3px;margin:0 0 4px 50px;font-size:12px;color:var(--text3)}
+    #tab-projections .rc-cat-sub .bad{color:var(--red);font-weight:700}
     #tab-projections .rc-tag.food{background:#e8f3ec;color:#2f7a4a}
     #tab-projections .rc-acc{margin-top:12px;font-size:11.5px;color:var(--text3);line-height:1.5}
     #tab-projections .rc-acc.bad{color:var(--red)}

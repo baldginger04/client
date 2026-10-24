@@ -14,6 +14,23 @@ const CATS = [
   { key: 'lbw',      label: 'Liquor · Beer · Wine' },
   { key: 'supplies', label: 'Supplies & Smallwares' },
 ];
+// Receiving-log categories. LBW is logged as four buckets that all roll up to
+// the one LBW budget/goal; 'lbw' itself is kept for any older rows.
+const LBW_SUBS = [
+  { key: 'liquor', label: 'Liquor' },
+  { key: 'beer',   label: 'Beer' },
+  { key: 'wine',   label: 'Wine' },
+  { key: 'bar',    label: 'Bar consumables' },
+];
+const LOG_LABELS = { food: 'Food', lbw: 'LBW', supplies: 'Supplies', liquor: 'Liquor', beer: 'Beer', wine: 'Wine', bar: 'Bar consumables' };
+function budgetCat(c) { return (c === 'lbw' || LBW_SUBS.some((s) => s.key === c)) ? 'lbw' : c; }
+function logOptionKeys(cats) {
+  const out = [];
+  if (cats.includes('food')) out.push('food');
+  if (cats.includes('lbw')) LBW_SUBS.forEach((s) => out.push(s.key));
+  if (cats.includes('supplies')) out.push('supplies');
+  return out;
+}
 const METHODS = [
   { key: 'covers_daily',   title: 'Covers by day',   desc: 'Guest counts per day. Most precise.' },
   { key: 'covers_weekly',  title: 'Covers by week',  desc: 'One guest count for the week.' },
@@ -452,7 +469,7 @@ async function renderMonthGlance(el, prof) {
   }));
   proj.forEach((r) => { const i = idxOf(r.sales_date); if (i >= 0) { W[i].pf += num(r.food_revenue); W[i].pl += num(r.lbw_revenue); } });
   acts.forEach((r) => { const i = idxOf(r.sales_date); if (i >= 0) { W[i].af += num(r.food_revenue); W[i].al += num(r.lbw_revenue); } });
-  log.forEach((r) => { const i = idxOf(r.receiving_date); if (i >= 0 && W[i].spent[r.category] != null) W[i].spent[r.category] += num(r.amount); });
+  log.forEach((r) => { const i = idxOf(r.receiving_date); const c = budgetCat(r.category); if (i >= 0 && W[i].spent[c] != null) W[i].spent[c] += num(r.amount); });
 
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const isCurrentMonth = monthStart.getFullYear() === today.getFullYear() && monthStart.getMonth() === today.getMonth();
@@ -802,7 +819,7 @@ async function renderLog(el) {
 
 function logForm(cats) {
   const today = ymd(new Date());
-  const opts = CATS.filter((c) => cats.includes(c.key)).map((c) => `<option value="${c.key}">${c.label}</option>`).join('');
+  const opts = logOptionKeys(cats).map((k) => `<option value="${k}">${LOG_LABELS[k]}</option>`).join('');
   return `
   <div class="pj-logform" id="pjLogForm">
     <div class="pj-lf-row">
@@ -848,7 +865,12 @@ function startEdit(el, row) {
   if (!row) return;
   store.editing = row.id;
   el.querySelector('#lfDate').value = row.receiving_date;
-  el.querySelector('#lfCat').value = row.category;
+  const catSel = el.querySelector('#lfCat');
+  // An older row may carry a category no longer offered (e.g. plain 'lbw').
+  if (!catSel.querySelector(`option[value="${row.category}"]`)) {
+    const o = document.createElement('option'); o.value = row.category; o.textContent = LOG_LABELS[row.category] || row.category; catSel.appendChild(o);
+  }
+  catSel.value = row.category;
   el.querySelector('#lfVendor').value = row.vendor || '';
   el.querySelector('#lfInv').value = row.invoice_number || '';
   el.querySelector('#lfAmt').value = fmtComma(num(row.amount));
@@ -994,12 +1016,26 @@ async function renderBudgetPanel(el, monthRows) {
 
   const ws = ymd(wStart), we = ymd(wEnd), td = ymd(today);
   const monthSpent = { food: 0, lbw: 0, supplies: 0 }, weekSpent = { food: 0, lbw: 0, supplies: 0 };
+  // LBW spend by bucket (liquor / beer / wine / bar; 'lbw' = older unsplit rows)
+  const monthSub = {}, weekSub = {};
   monthRows.forEach((r) => {
+    const c = budgetCat(r.category), a = num(r.amount);
     // A future-dated invoice would otherwise be counted against a budget that
     // only runs through today.
-    if (!(isCurrentMonth && r.receiving_date > td) && monthSpent[r.category] != null) monthSpent[r.category] += num(r.amount);
-    if (isCurrentMonth && r.receiving_date >= ws && r.receiving_date <= we && weekSpent[r.category] != null) weekSpent[r.category] += num(r.amount);
+    if (!(isCurrentMonth && r.receiving_date > td) && monthSpent[c] != null) {
+      monthSpent[c] += a;
+      if (c === 'lbw') monthSub[r.category] = (monthSub[r.category] || 0) + a;
+    }
+    if (isCurrentMonth && r.receiving_date >= ws && r.receiving_date <= we && weekSpent[c] != null) {
+      weekSpent[c] += a;
+      if (c === 'lbw') weekSub[r.category] = (weekSub[r.category] || 0) + a;
+    }
   });
+  const subLine = (label, by) => {
+    const keys = [...LBW_SUBS.map((s) => s.key), 'lbw'].filter((k) => by[k]);
+    if (!keys.length) return '';
+    return `<div class="pj-bsub"><span>${label}</span>${keys.map((k) => `<em class="cat-${k}">${LOG_LABELS[k]} <b>${money(by[k])}</b></em>`).join('')}</div>`;
+  };
 
   // supplies budgets off TOTAL sales (food + LBW); food/LBW off their own revenue
   const baseMonth = baseOver(mStart, mThrough);
@@ -1028,6 +1064,7 @@ async function renderBudgetPanel(el, monthRows) {
       <div class="pj-budgets-h">${label} budget <span>${fmtPct(g)}% of sales</span></div>
       ${isCurrentMonth ? row('This week', wB, weekSpent[cat]) : ''}
       ${row(isCurrentMonth ? 'Month to date' : monthName(store.month), mB, monthSpent[cat])}
+      ${cat === 'lbw' ? (isCurrentMonth ? subLine('This week', weekSub) : '') + subLine(isCurrentMonth ? 'Month to date' : 'Month', monthSub) : ''}
     </div>`;
   }).join('') + (usedActual
     ? `<div class="pj-mg-note">Budget reflects the sales that actually posted on days QuickBooks has closed, and the projection on days it hasn't.</div>`
@@ -1053,7 +1090,7 @@ async function loadEntries(el, cats) {
 
   const sum = {}; cats.forEach((c) => { sum[c] = 0; });
   let total = 0;
-  rows.forEach((r) => { if (sum[r.category] != null) sum[r.category] += num(r.amount); total += num(r.amount); });
+  rows.forEach((r) => { const c = budgetCat(r.category); if (sum[c] != null) sum[c] += num(r.amount); total += num(r.amount); });
 
   await renderBudgetPanel(el, rows);
   totals.innerHTML = '';
@@ -1062,7 +1099,7 @@ async function loadEntries(el, cats) {
     list.innerHTML = `<div class="pj-lempty">No entries yet for ${monthName(store.month)}. Add your first above — or snap a receipt.</div>`;
     return;
   }
-  const catLabel = (k) => (CATS.find((c) => c.key === k) || {}).label || k;
+  const catLabel = (k) => LOG_LABELS[k] || k;
   list.innerHTML = `<div class="pj-ltable">` + rows.map((r) => `
     <div class="pj-lrow">
       <div class="pj-ldate">${new Date(r.receiving_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
@@ -1409,6 +1446,14 @@ function pjStyles() {
     #tab-projections .pj-lcat.cat-food{background:#fdf1dc;color:#8a6500}
     #tab-projections .pj-lcat.cat-lbw{background:#eef1f8;color:var(--navy)}
     #tab-projections .pj-lcat.cat-supplies{background:#eef0f2;color:var(--text2)}
+    #tab-projections .pj-lcat.cat-liquor{background:#efe7f7;color:#6b3fa0}
+    #tab-projections .pj-lcat.cat-beer{background:#fbefd9;color:#8a5a00}
+    #tab-projections .pj-lcat.cat-wine{background:#f8e6ea;color:#8c2a45}
+    #tab-projections .pj-lcat.cat-bar{background:#e4f2f1;color:#1f6b66}
+    #tab-projections .pj-bsub{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;font-size:12px;color:var(--text3);margin:2px 0 6px}
+    #tab-projections .pj-bsub>span{font-weight:700;min-width:96px}
+    #tab-projections .pj-bsub em{font-style:normal}
+    #tab-projections .pj-bsub em b{color:var(--text);font-weight:700}
     #tab-projections .pj-lvendor{flex:1;min-width:0;font-size:13.5px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     #tab-projections .pj-lvendor span{color:var(--text3);font-weight:500;margin-left:6px;font-size:12px}
     #tab-projections .pj-lamt{font-family:var(--font-display);font-weight:800;font-size:14px;color:var(--text);flex:none}
