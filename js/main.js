@@ -374,7 +374,7 @@ const TAB_TITLES = {
   'pnl-summary': { title: 'Prime Sheet',              sub: 'Current month vs prior month and same month last year' },
   compare:     { title: 'Compare P&Ls',               sub: 'Your locations side by side, with a combined total' },
   documents:   { title: 'Documents',                  sub: 'W-9s, voided checks, tax documents, and other long-lived records' },
-  projections: { title: 'Projections & Receiving Log', sub: 'Forecasts, receiving log, and month-end review' },
+  projections: { title: 'Projections & Receiving Log', sub: 'Forecasts, receiving log, and log review' },
   messages:    { title: 'Client Questions',          sub: 'Questions and answers with the Bald Ginger team' },
 };
 

@@ -1,16 +1,22 @@
 // js/reconcile.js
-// "Month-end review" sub-view of the Projections tab.
+// "Log review" sub-view of the Projections tab — monthly or weekly (Mon–Sun).
 //   Team  : connect QuickBooks, run a live review, and PUBLISH a snapshot.
-//   Client: read-only view of the latest published report — what their
-//           management team did not record in the receiving log.
+//   Client: read-only view of the published report for a month or week — what
+//           their management team did not record in the receiving log.
 // Nothing is ever written back to the receiving log.
+// Reports are keyed by period: 'YYYY-MM' for a month, 'WYYYY-MM-DD' (the
+// Monday) for a week.
 
 import { sb } from './config.js';
 
 let ctx = null;         // { clientId, userId, isTeam }
 let pollTimer = null;
+let mode = 'month';     // 'month' | 'week'
 let month = null;       // Date at first of the review month (default: last month)
+let week = null;        // Monday of the review week (default: last full week)
 let lastResult = null;  // last live team run, for publishing
+let lastPeriod = null;  // period key lastResult belongs to
+const POSTING_LAG_DAYS = 3; // bills dated this recently may not be in QBO yet
 
 function firstOfMonth(d = new Date()) { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function addMonths(d, k) { return new Date(d.getFullYear(), d.getMonth() + k, 1); }
@@ -19,6 +25,21 @@ function monthName(d) { return d.toLocaleDateString('en-US', { month: 'long', ye
 function money(n) { return '$' + (Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 0 }); }
 function money2(n) { return '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function ymd(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function mondayOf(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
+function weekName(mon) {
+  const e = addDays(mon, 6);
+  const f = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return `Week of ${f(mon)} – ${f(e)}${e.getFullYear() !== new Date().getFullYear() ? ', ' + e.getFullYear() : ''}`;
+}
+function periodKey() { return mode === 'week' ? 'W' + ymd(week) : monthKey(month); }
+function periodName() { return mode === 'week' ? weekName(week) : monthName(month); }
+function periodEnd() { return mode === 'week' ? addDays(week, 6) : new Date(month.getFullYear(), month.getMonth() + 1, 0); }
+function periodParams() { return mode === 'week' ? { week: ymd(week) } : { month: monthKey(month) }; }
+function stepPeriod(k) { if (mode === 'week') week = addDays(week, 7 * k); else month = addMonths(month, k); }
+// True when the period ends within the posting lag, so some bills may not be booked yet.
+function stillPosting() { const cut = addDays(new Date(), -POSTING_LAG_DAYS); cut.setHours(0, 0, 0, 0); return periodEnd().getTime() > cut.getTime(); }
 function fmtDate(s) { return s ? new Date(s + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'; }
 const CAT_LABEL = { food: 'Food', lbw: 'LBW', liquor: 'Liquor', beer: 'Beer', wine: 'Wine', bar: 'Bar consumables' };
 // Amount to show for a QBO bill: the Food + LBW portion (older reports only carried foodAmount).
@@ -56,15 +77,16 @@ function catStrip(s, forClient) {
 export async function mountReconcile({ container, clientId, userId, isTeam }) {
   ctx = { clientId, userId, isTeam: !!isTeam };
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  lastResult = null;
+  lastResult = null; lastPeriod = null;
   if (!month) month = firstOfMonth(addMonths(new Date(), -1)); // default: last completed month
+  if (!week) week = addDays(mondayOf(new Date()), -7);          // default: last full Mon–Sun week
 
   if (ctx.isTeam) {
     container.innerHTML = rcStyles() + `
       <div class="rc-wrap">
         <div class="rc-head">
-          <div class="pj-title">Month-end review</div>
-          <div class="pj-sub">Pull this client's Food and LBW bills from QuickBooks, flag what wasn't recorded in the receiving log, then publish it for the client. Nothing is written back to the log.</div>
+          <div class="pj-title">Log review</div>
+          <div class="pj-sub">Pull this client's Food and LBW bills from QuickBooks for a month or a week, flag what wasn't recorded in the receiving log, then publish it for the client. Nothing is written back to the log.</div>
         </div>
         <div class="rc-card" id="rcConn"><div class="rc-loading">Checking QuickBooks connection…</div></div>
         <div id="rcBody"></div>
@@ -74,26 +96,42 @@ export async function mountReconcile({ container, clientId, userId, isTeam }) {
     container.innerHTML = rcStyles() + `
       <div class="rc-wrap">
         <div class="rc-head">
-          <div class="pj-title">Month-end review</div>
-          <div class="pj-sub">Each month we compare the invoices in the books against what was recorded in the receiving log, so anything missed is easy to catch.</div>
+          <div class="pj-title">Log review</div>
+          <div class="pj-sub">Each week and month we compare the invoices in the books against what was recorded in the receiving log, so anything missed is easy to catch.</div>
         </div>
-        <div class="rc-monthnav">
-          <button class="rc-wbtn" id="rcPrev">‹</button>
-          <div class="rc-mlabel">${monthName(month)}</div>
-          <button class="rc-wbtn" id="rcNext">›</button>
-        </div>
+        <div id="rcNav"></div>
         <div id="rcClientBody"><div class="rc-loading">Loading…</div></div>
       </div>`;
-    wireMonthNav(container, loadClientReport);
+    renderNav(container, false, loadClientReport);
     await loadClientReport();
   }
 }
 
-function wireMonthNav(root, after) {
-  root.querySelector('#rcPrev').addEventListener('click', () => { month = addMonths(month, -1); refreshLabel(root); after(); });
-  root.querySelector('#rcNext').addEventListener('click', () => { month = addMonths(month, 1); refreshLabel(root); after(); });
+// Monthly / Weekly switch + prev/next (+ Run button for the team). Re-renders
+// itself on every change, then calls `after`.
+function renderNav(root, withRun, after) {
+  const nav = root.querySelector('#rcNav');
+  if (!nav) return;
+  nav.innerHTML = `
+    <div class="rc-mode">
+      <button data-mode="month" class="${mode === 'month' ? 'on' : ''}">Monthly</button>
+      <button data-mode="week" class="${mode === 'week' ? 'on' : ''}">Weekly</button>
+    </div>
+    <div class="rc-monthnav">
+      <button class="rc-wbtn" data-step="-1">‹</button>
+      <div class="rc-mlabel">${periodName()}</div>
+      <button class="rc-wbtn" data-step="1">›</button>
+      ${withRun ? '<button class="rc-run" id="rcRun">Run review</button>' : ''}
+    </div>`;
+  nav.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
+    if (mode === b.dataset.mode) return;
+    mode = b.dataset.mode; renderNav(root, withRun, after); after();
+  }));
+  nav.querySelectorAll('[data-step]').forEach((b) => b.addEventListener('click', () => {
+    stepPeriod(Number(b.dataset.step)); renderNav(root, withRun, after); after();
+  }));
+  if (withRun) nav.querySelector('#rcRun').addEventListener('click', runReview);
 }
-function refreshLabel(root) { const l = root.querySelector('.rc-mlabel'); if (l) l.textContent = monthName(month); }
 
 async function callFn(fn, action, extra = {}) {
   const body = action ? { action, client_id: ctx.clientId, ...extra } : { client_id: ctx.clientId, ...extra };
@@ -106,17 +144,19 @@ async function callFn(fn, action, extra = {}) {
 async function loadClientReport() {
   const out = document.getElementById('rcClientBody');
   if (!out) return;
-  out.innerHTML = `<div class="rc-loading">Loading ${monthName(month)}…</div>`;
+  const key = periodKey(), name = periodName();
+  out.innerHTML = `<div class="rc-loading">Loading ${esc(name)}…</div>`;
   let rep;
   try {
     const r = await sb.from('reconciliation_reports').select('summary,missing,generated_at')
-      .eq('client_id', ctx.clientId).eq('period', monthKey(month)).eq('published', true).maybeSingle();
+      .eq('client_id', ctx.clientId).eq('period', key).eq('published', true).maybeSingle();
     if (r.error) throw r.error;
     rep = r.data;
   } catch (e) { out.innerHTML = `<div class="rc-err">Couldn't load the report: ${esc(e.message)}</div>`; return; }
+  if (key !== periodKey()) return; // user moved on while this loaded
 
   if (!rep) {
-    out.innerHTML = `<div class="rc-empty">No month-end review has been published for ${monthName(month)} yet. Your bookkeeping team posts these once the books close.</div>`;
+    out.innerHTML = `<div class="rc-empty">No review has been published for ${esc(name)} yet. Your bookkeeping team posts these once that ${mode === 'week' ? 'week’s' : 'month’s'} invoices are in the books.</div>`;
     return;
   }
   const s = rep.summary || {};
@@ -159,7 +199,7 @@ async function renderConn() {
     el.innerHTML = `
       <div class="rc-row">
         <div><div class="rc-t"><span class="rc-dot"></span>Connect QuickBooks</div>
-          <div class="rc-s">Link this client's QuickBooks so month-end review can pull its Food and LBW bills.</div></div>
+          <div class="rc-s">Link this client's QuickBooks so the log review can pull its Food and LBW bills.</div></div>
         <button class="rc-btn" id="rcConnect">Connect</button>
       </div>`;
     el.querySelector('#rcConnect').addEventListener('click', startConnect);
@@ -170,33 +210,33 @@ async function renderConn() {
 function renderPanel() {
   const body = document.getElementById('rcBody');
   if (!body) return;
-  lastResult = null;
+  lastResult = null; lastPeriod = null;
   body.innerHTML = `
     <div class="rc-panel">
-      <div class="rc-monthnav">
-        <button class="rc-wbtn" id="rcPrev">‹</button>
-        <div class="rc-mlabel">${monthName(month)}</div>
-        <button class="rc-wbtn" id="rcNext">›</button>
-        <button class="rc-run" id="rcRun">Run review</button>
-      </div>
-      <div id="rcResult"><div class="rc-hint">Pick a month and run the review to compare QuickBooks against the receiving log.</div></div>
+      <div id="rcNav"></div>
+      <div id="rcResult"><div class="rc-hint">Pick a month or week and run the review to compare QuickBooks against the receiving log.</div></div>
     </div>`;
-  wireMonthNav(body, () => { const out = document.getElementById('rcResult'); if (out) out.innerHTML = `<div class="rc-hint">Run the review for ${monthName(month)}.</div>`; lastResult = null; });
-  body.querySelector('#rcRun').addEventListener('click', runReview);
+  renderNav(body, true, () => {
+    const out = document.getElementById('rcResult');
+    if (out) out.innerHTML = `<div class="rc-hint">Run the review for ${esc(periodName())}.</div>`;
+    lastResult = null; lastPeriod = null;
+  });
 }
 
 async function runReview() {
   const btn = document.getElementById('rcRun');
   const out = document.getElementById('rcResult');
   btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Pulling from QuickBooks…';
-  out.innerHTML = `<div class="rc-loading">Reading ${monthName(month)} bills, accounts, and the receiving log…</div>`;
+  const key = periodKey(), name = periodName(), posting = stillPosting();
+  out.innerHTML = `<div class="rc-loading">Reading bills, accounts, and the receiving log for ${esc(name)}…</div>`;
   try {
-    const d = await callFn('qbo-close-reconcile', null, { month: monthKey(month) });
+    const d = await callFn('qbo-close-reconcile', null, periodParams());
+    if (key !== periodKey()) return; // user moved on while this ran
     if (d && d.error === 'not_connected') { out.innerHTML = `<div class="rc-err">QuickBooks isn't connected for this client.</div>`; return; }
     if (d && d.error === 'reauth_needed') { out.innerHTML = `<div class="rc-err">QuickBooks needs to be reconnected — the authorization expired. Disconnect and reconnect above.</div>`; return; }
     if (!d || !d.ok) throw new Error((d && (d.message || d.error)) || 'no result');
-    lastResult = d;
-    renderResult(out, d);
+    lastResult = d; lastPeriod = { key, name };
+    renderResult(out, d, posting);
   } catch (e) {
     out.innerHTML = `<div class="rc-err">Review failed: ${esc(e.message)}</div>`;
   } finally {
@@ -204,7 +244,7 @@ async function runReview() {
   }
 }
 
-function renderResult(out, d) {
+function renderResult(out, d, posting) {
   const s = d.summary;
   const cards = `
     <div class="rc-cards">
@@ -232,24 +272,27 @@ function renderResult(out, d) {
       ? `<div class="rc-acc">${esc(CAT_LABEL[c] || c)} accounts pulled: ${list.map((a) => esc(a)).join(' · ')}</div>`
       : `<div class="rc-acc bad">No ${esc(CAT_LABEL[c] || c)} accounts found for this client — check the COA mappings.</div>`;
   }).join('');
+  const lagNote = posting
+    ? `<div class="rc-lag">⏳ This period ended within the last ${POSTING_LAG_DAYS} days, so some bills may not be in QuickBooks yet — "missing" items could still be on their way. Consider re-running before you publish.</div>`
+    : '';
   const publish = `
     <div class="rc-publish">
-      <div><div class="rc-pt">Publish to client</div><div class="rc-ps">Posts this ${monthName(month)} review to the client's portal (the "not recorded" list only).</div></div>
+      <div><div class="rc-pt">Publish to client</div><div class="rc-ps">Posts this review (${esc(lastPeriod ? lastPeriod.name : periodName())}) to the client's portal (the "not recorded" list only).</div></div>
       <button class="rc-btn" id="rcPublish">Publish</button>
       <span class="rc-pmsg" id="rcPubMsg"></span>
     </div>`;
-  out.innerHTML = cards + catStrip(s, false) + missing + extra + accNote + publish;
+  out.innerHTML = lagNote + cards + catStrip(s, false) + missing + extra + accNote + publish;
   out.querySelector('#rcPublish').addEventListener('click', publishReport);
 }
 
 async function publishReport() {
-  if (!lastResult) return;
+  if (!lastResult || !lastPeriod) return;
   const btn = document.getElementById('rcPublish');
   const msg = document.getElementById('rcPubMsg');
   btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Publishing…';
   try {
     const { error } = await sb.from('reconciliation_reports').upsert({
-      client_id: ctx.clientId, period: monthKey(month),
+      client_id: ctx.clientId, period: lastPeriod.key,
       generated_by: ctx.userId, generated_at: new Date().toISOString(),
       summary: lastResult.summary, missing: lastResult.missingFromLog, extra: lastResult.loggedNotInQbo,
       published: true,
@@ -295,7 +338,7 @@ async function startConnect() {
 }
 
 async function disconnect() {
-  if (!confirm('Disconnect QuickBooks for this client? Month-end review will stop working until it is reconnected.')) return;
+  if (!confirm('Disconnect QuickBooks for this client? The log review will stop working until it is reconnected.')) return;
   try { await callFn('qbo-oauth', 'disconnect'); renderConn(); }
   catch (e) { alert('Could not disconnect: ' + e.message); }
 }
@@ -323,6 +366,11 @@ function rcStyles() {
     #tab-projections .rc-wbtn:hover{border-color:var(--navy);color:var(--navy)}
     #tab-projections .rc-mlabel{font-family:var(--font-display);font-weight:800;font-size:17px;color:var(--text);min-width:150px}
     #tab-projections .rc-run{margin-left:auto}
+    #tab-projections .rc-mode{display:inline-flex;border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:12px;background:var(--bg)}
+    #tab-projections .rc-mode button{border:0;background:transparent;font-family:var(--font-display);font-weight:700;font-size:13px;color:var(--text2);padding:8px 16px;cursor:pointer}
+    #tab-projections .rc-mode button+button{border-left:1px solid var(--border)}
+    #tab-projections .rc-mode button.on{background:var(--navy);color:#fff}
+    #tab-projections .rc-lag{background:#fff7e6;border:1px solid #f0d59a;color:#7a5600;border-radius:var(--r);padding:10px 14px;font-size:12.5px;margin-bottom:14px}
     #tab-projections .rc-cards{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}
     #tab-projections .rc-c{flex:1;min-width:130px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px;display:flex;flex-direction:column;gap:2px}
     #tab-projections .rc-c span{font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.03em}

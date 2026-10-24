@@ -114,8 +114,8 @@ export function unmountProjections() { ctx = null; store = null; }
 /* ---------- shell + sub-nav ---------- */
 function renderShell(pane) {
   const tabs = ctx.isTeam
-    ? [['log', 'Receiving log'], ['sales', 'Enter sales'], ['reconcile', 'Month-end review'], ['setup', 'Setup']]
-    : [['log', 'Receiving log'], ['reconcile', 'Month-end review']];
+    ? [['log', 'Receiving log'], ['sales', 'Enter sales'], ['reconcile', 'Log review'], ['setup', 'Setup']]
+    : [['log', 'Receiving log'], ['reconcile', 'Log review']];
   const nav = tabs.map(([k, l]) => `<button data-sub="${k}" class="${store.sub === k ? 'on' : ''}">${l}</button>`).join('');
   pane.innerHTML = pjStyles() + `
   <div class="pj-wrap">
@@ -297,8 +297,8 @@ async function pullActualsFromQbo(el, projF, projL) {
   try {
     const { data, error } = await sb.functions.invoke('qbo-actuals', { body: { client_id: ctx.clientId, week_start: ymd(store.week) } });
     if (error) throw new Error(error.message || 'request failed');
-    if (data && data.error === 'not_connected') { pullNotice(el, "QuickBooks isn't connected for this client. Connect it under Month-end review first."); return; }
-    if (data && data.error === 'reauth_needed') { pullNotice(el, 'QuickBooks needs to be reconnected \u2014 do it under Month-end review, then try again.'); return; }
+    if (data && data.error === 'not_connected') { pullNotice(el, "QuickBooks isn't connected for this client. Connect it under Log review first."); return; }
+    if (data && data.error === 'reauth_needed') { pullNotice(el, 'QuickBooks needs to be reconnected \u2014 do it under Log review, then try again.'); return; }
     if (!data || !data.ok) throw new Error((data && (data.message || data.error)) || 'no result');
     renderActualsReview(el, data, projF, projL);
   } catch (e) {
@@ -675,8 +675,8 @@ async function pullFromQbo(el) {
   try {
     const { data, error } = await sb.functions.invoke('qbo-project', { body: { client_id: ctx.clientId, week_start: ymd(store.week) } });
     if (error) throw new Error(error.message || 'request failed');
-    if (data && data.error === 'not_connected') { pullNotice(el, "QuickBooks isn't connected for this client. Connect it under Month-end review first."); return; }
-    if (data && data.error === 'reauth_needed') { pullNotice(el, 'QuickBooks needs to be reconnected — do it under Month-end review, then try again.'); return; }
+    if (data && data.error === 'not_connected') { pullNotice(el, "QuickBooks isn't connected for this client. Connect it under Log review first."); return; }
+    if (data && data.error === 'reauth_needed') { pullNotice(el, 'QuickBooks needs to be reconnected — do it under Log review, then try again.'); return; }
     if (!data || !data.ok) throw new Error((data && (data.message || data.error)) || 'no result');
     renderQboReview(el, data);
   } catch (e) {
