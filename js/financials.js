@@ -2560,7 +2560,7 @@ async function loadPnlJump(sec) {
 // =====================================================================
 // MONTH NOTES (10/25/26) — 5–7 plain-English bullets at the top of the
 // month's P&L. The team drafts them with Claude (Edge Function
-// month-commentary, built from the same pnl_data and formulas as the KPI
+// monthly-commentary, built from the same pnl_data and formulas as the KPI
 // Dashboard), edits, and publishes. Clients see only the published version
 // (month_commentary RLS). Nothing reaches a client unedited or unpublished.
 // =====================================================================
@@ -2656,7 +2656,7 @@ async function mcDraft(sec) {
   const t = sec.querySelector('#mcText'); if (t && mcState.row) mcState.row.body = t.value;
   mcState.busy = true; mcState.msg = ''; mcState.bad = false; drawCommentary(sec);
   try {
-    const { data, error } = await sb.functions.invoke('month-commentary', { body: { client_id: state.clientId, period } });
+    const { data, error } = await sb.functions.invoke('monthly-commentary', { body: { client_id: state.clientId, period } });
     if (error) throw new Error(error.message || 'request failed');
     if (!data || !data.ok) throw new Error((data && data.error) || 'no draft');
     const keepBody = mcState.row && mcState.row.body;
