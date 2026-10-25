@@ -286,6 +286,7 @@ function drawPnlSection(sec) {
     + (team ? '<button type="button" id="pnlBackfill" style="border:1px solid var(--border);background:var(--bg);color:var(--text);border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer">\u21e3 Backfill history</button>' : '')
     + '</div>'
     + (team ? '<div id="pnlBackfillPanel" style="display:none"></div>' : '')
+    + '<div id="mcBox"></div>'
     + '<div id="pnlBody"><div style="color:var(--text3);font-size:13px;padding:6px 0">Loading\u2026</div></div>';
   sec.querySelector('#pnlPrev').addEventListener('click', () => { pnlMonth = bsAddMonths(pnlMonth, -1); drawPnlSection(sec); });
   sec.querySelector('#pnlNext').addEventListener('click', () => { pnlMonth = bsAddMonths(pnlMonth, 1); drawPnlSection(sec); });
@@ -293,6 +294,7 @@ function drawPnlSection(sec) {
   if (team) sec.querySelector('#pnlPull').addEventListener('click', () => pullPnl(sec));
   if (team) sec.querySelector('#pnlBackfill').addEventListener('click', () => toggleBackfill(sec));
   loadPublishedPnl(sec);
+  loadCommentary(sec);
 }
 async function loadPublishedPnl(sec) {
   const body = sec.querySelector('#pnlBody'); if (!body) return;
@@ -2552,4 +2554,135 @@ async function loadPnlJump(sec) {
       drawPnlSection(sec);
     });
   } catch (e) { /* picker is a convenience; arrows still work */ }
+}
+
+
+// =====================================================================
+// MONTH NOTES (10/25/26) — 5–7 plain-English bullets at the top of the
+// month's P&L. The team drafts them with Claude (Edge Function
+// month-commentary, built from the same pnl_data and formulas as the KPI
+// Dashboard), edits, and publishes. Clients see only the published version
+// (month_commentary RLS). Nothing reaches a client unedited or unpublished.
+// =====================================================================
+const mcState = { row: null, period: null, busy: false, msg: '', bad: false, showNums: false, fresh: null };
+
+function mcBulletsHtml(text) {
+  const lines = String(text || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  return '<ul style="margin:6px 0 0 18px;padding:0;line-height:1.55;font-size:14px;color:var(--text)">'
+    + lines.map((l) => '<li style="margin:3px 0">' + bsEsc(l.replace(/^[-•*]\s*/, '')) + '</li>').join('') + '</ul>';
+}
+
+function mcNumbersHtml(m) {
+  if (!m || !m.this_month) return '';
+  const cols = [['This month', m.this_month], ['Prior month', m.prior_month], ['Same month last year', m.same_month_last_year]];
+  const money = (n) => (n == null ? '—' : '$' + Math.round(n).toLocaleString('en-US'));
+  const pc = (n) => (n == null ? '—' : n.toFixed(1) + '%');
+  const rowsDef = [['Total sales', 'total_sales', money], ['Food sales', 'food_sales', money], ['Beverage sales (liquor, beer, wine)', 'bev_sales', money],
+    ['Food cost %', 'food_cost_pct', pc], ['Beverage cost %', 'bev_cost_pct', pc], ['Labor %', 'labor_pct', pc], ['Prime cost %', 'prime_cost_pct', pc]];
+  return '<table style="width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px"><thead><tr><th style="text-align:left;padding:4px 6px;color:var(--text3)"></th>'
+    + cols.map(([h]) => '<th style="text-align:right;padding:4px 6px;color:var(--text3)">' + h + '</th>').join('') + '</tr></thead><tbody>'
+    + rowsDef.map(([label, key, f]) => '<tr><td style="padding:4px 6px;border-top:1px solid var(--border)">' + label + '</td>'
+      + cols.map(([, k]) => '<td style="text-align:right;padding:4px 6px;border-top:1px solid var(--border);font-variant-numeric:tabular-nums">' + f(k ? k[key] : null) + '</td>').join('') + '</tr>').join('')
+    + '</tbody></table><div style="font-size:11px;color:var(--text3);margin-top:4px">From the published P&amp;L’s categories — the same figures as the KPI Dashboard. Check each bullet against these before publishing.</div>';
+}
+
+async function loadCommentary(sec) {
+  const box = sec.querySelector('#mcBox'); if (!box) return;
+  const period = bsKey(pnlMonth);
+  mcState.period = period;
+  try {
+    const r = await sb.from('month_commentary').select('*').eq('client_id', state.clientId).eq('period', period).maybeSingle();
+    if (r.error) throw r.error;
+    if (mcState.period !== period) return;
+    mcState.row = r.data || null;
+  } catch (e) {
+    mcState.row = null;
+    if (state.isTeam) { box.innerHTML = '<div style="color:#b93232;font-size:12.5px;margin-bottom:10px">Month notes couldn’t load: ' + bsEsc(e.message || e) + '</div>'; return; }
+  }
+  drawCommentary(sec);
+}
+
+function drawCommentary(sec) {
+  const box = sec.querySelector('#mcBox'); if (!box) return;
+  const r = mcState.row;
+  const card = (inner) => '<div style="background:#FBF7F1;border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin:0 0 14px">' + inner + '</div>';
+
+  // Clients: the published notes only, or nothing at all.
+  if (!state.isTeam) {
+    box.innerHTML = r && r.published && r.body
+      ? card('<div style="font-weight:800;font-size:14px;color:var(--text)">Notes on ' + bsMonthName(pnlMonth) + '</div>' + mcBulletsHtml(r.body))
+      : '';
+    return;
+  }
+
+  const status = !r ? 'No notes yet' : r.published ? 'Published — the client can see this' : 'Draft — not visible to the client';
+  const statusColor = r && r.published ? '#2e7d5b' : 'var(--text3)';
+  const btn = (id, label, primary) => '<button type="button" id="' + id + '" ' + (mcState.busy ? 'disabled ' : '')
+    + 'style="border:1px solid ' + (primary ? '#D85B31' : 'var(--border)') + ';background:' + (primary ? '#D85B31' : 'var(--bg)') + ';color:' + (primary ? '#fff' : 'var(--text)')
+    + ';border-radius:8px;padding:7px 13px;font-weight:700;font-size:12.5px;cursor:pointer">' + label + '</button>';
+  box.innerHTML = card(
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+    + '<div style="font-weight:800;font-size:14px;color:var(--text)">Month notes for the client</div>'
+    + '<span style="font-size:12px;color:' + statusColor + '">' + status + '</span>'
+    + '<span style="flex:1"></span>'
+    + btn('mcDraft', mcState.busy ? 'Drafting…' : '✨ Draft with Claude', !r)
+    + '</div>'
+    + (mcState.fresh ? '<div style="margin-top:10px;padding:10px 12px;border:1px dashed #D85B31;border-radius:8px;background:#fff">'
+        + '<div style="font-size:12px;color:var(--text3)">New draft — your edited version below is unchanged</div>' + mcBulletsHtml(mcState.fresh)
+        + '<div style="margin-top:8px;display:flex;gap:8px">' + btn('mcUseFresh', 'Use this draft', true) + btn('mcDropFresh', 'Keep mine') + '</div></div>' : '')
+    + (r ? '<textarea id="mcText" rows="8" spellcheck="true" autocorrect="on" style="width:100%;box-sizing:border-box;margin-top:10px;border:1px solid var(--border);border-radius:8px;padding:10px;font:13.5px/1.5 Inter,sans-serif;background:#fff">' + bsEsc(r.body || '') + '</textarea>'
+        + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">'
+        + btn('mcSave', 'Save') + (r.published ? btn('mcUnpub', 'Unpublish') + btn('mcPub', 'Save &amp; update published', true) : btn('mcPub', 'Publish to client', true))
+        + '<a href="#" id="mcNums" style="font-size:12px;margin-left:6px">' + (mcState.showNums ? 'Hide' : 'Show') + ' the numbers used</a>'
+        + '<span id="mcMsg" style="font-size:12.5px;color:' + (mcState.bad ? '#b93232' : 'var(--text3)') + '">' + bsEsc(mcState.msg || '') + '</span></div>'
+        + (mcState.showNums ? mcNumbersHtml(r.metrics) : '')
+        + '<div style="font-size:11px;color:var(--text3);margin-top:6px">One bullet per line. ' + (r.edited_by ? 'Last edited by ' + bsEsc(r.edited_by) + '. ' : '') + (r.published_by ? 'Published by ' + bsEsc(r.published_by) + '.' : '') + '</div>'
+      : '<div style="font-size:12.5px;color:var(--text3);margin-top:6px">Publish the month’s P&amp;L first, then draft 5–7 plain-English bullets on sales, prime cost, food and beverage cost, and labor. You edit them before the client sees anything.'
+        + (mcState.msg ? ' <span style="color:' + (mcState.bad ? '#b93232' : 'var(--text3)') + '">' + bsEsc(mcState.msg) + '</span>' : '') + '</div>'));
+
+  const on = (id, fn) => { const el = box.querySelector('#' + id); if (el) el.addEventListener('click', (e) => { e.preventDefault(); fn(); }); };
+  on('mcDraft', () => mcDraft(sec));
+  on('mcUseFresh', () => { const t = box.querySelector('#mcText'); if (t) t.value = mcState.fresh; mcState.fresh = null; mcSave(sec, null, 'Draft copied in — saved.'); });
+  on('mcDropFresh', () => { mcState.fresh = null; drawCommentary(sec); });
+  on('mcSave', () => mcSave(sec, null, 'Saved.'));
+  on('mcPub', () => mcSave(sec, true, 'Published — the client sees it on this month’s Financials.'));
+  on('mcUnpub', () => mcSave(sec, false, 'Unpublished — hidden from the client.'));
+  on('mcNums', () => { mcState.showNums = !mcState.showNums; const t = box.querySelector('#mcText'); if (t && mcState.row) mcState.row.body = t.value; drawCommentary(sec); });
+}
+
+async function mcDraft(sec) {
+  if (mcState.busy) return;
+  const period = mcState.period, hadEdit = !!(mcState.row && mcState.row.body);
+  const t = sec.querySelector('#mcText'); if (t && mcState.row) mcState.row.body = t.value;
+  mcState.busy = true; mcState.msg = ''; mcState.bad = false; drawCommentary(sec);
+  try {
+    const { data, error } = await sb.functions.invoke('month-commentary', { body: { client_id: state.clientId, period } });
+    if (error) throw new Error(error.message || 'request failed');
+    if (!data || !data.ok) throw new Error((data && data.error) || 'no draft');
+    const keepBody = mcState.row && mcState.row.body;
+    await loadCommentaryRow(period);
+    if (hadEdit) { mcState.fresh = data.draft; if (mcState.row) mcState.row.body = keepBody; }
+    mcState.msg = hadEdit ? '' : 'Draft ready — edit, then publish.';
+  } catch (e) { mcState.msg = 'Couldn’t draft: ' + (e.message || e); mcState.bad = true; }
+  mcState.busy = false;
+  if (mcState.period === period) drawCommentary(sec);
+}
+
+async function loadCommentaryRow(period) {
+  const r = await sb.from('month_commentary').select('*').eq('client_id', state.clientId).eq('period', period).maybeSingle();
+  if (!r.error && mcState.period === period) mcState.row = r.data || null;
+}
+
+async function mcSave(sec, publish, okMsg) {
+  const t = sec.querySelector('#mcText'); if (!t || !mcState.row) return;
+  const body = t.value.split('\n').map((l) => l.trim()).filter(Boolean).join('\n');
+  if (publish && !body) { mcState.msg = 'Nothing to publish.'; mcState.bad = true; drawCommentary(sec); return; }
+  const now = new Date().toISOString(), who = state.fullName || null;
+  const patch = { body, edited_at: now, edited_by: who };
+  if (publish === true) Object.assign(patch, { published: true, published_at: now, published_by: who });
+  if (publish === false) Object.assign(patch, { published: false });
+  const { error } = await sb.from('month_commentary').update(patch).eq('client_id', state.clientId).eq('period', mcState.period);
+  if (error) { mcState.msg = 'Not saved: ' + error.message; mcState.bad = true; }
+  else { Object.assign(mcState.row, patch); mcState.msg = okMsg; mcState.bad = false; }
+  drawCommentary(sec);
 }
