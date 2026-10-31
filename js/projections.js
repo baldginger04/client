@@ -1014,6 +1014,18 @@ async function renderBudgetPanel(el, monthRows) {
     return { food: f, lbw: l, supplies: f + l };
   };
 
+  // Actual sales only (no projection fill-in), plus the last day that posted,
+  // so the cost % reads against real sales and says how current it is.
+  const actualOver = (from, to) => {
+    let f = 0, l = 0, last = null;
+    for (let d = new Date(from); d.getTime() <= to.getTime(); d = addDays(d, 1)) {
+      const r = byDay[ymd(d)];
+      if (!r || (r.af + r.al) <= 0) continue;
+      f += r.af; l += r.al; last = new Date(d);
+    }
+    return { food: f, lbw: l, total: f + l, last };
+  };
+
   const ws = ymd(wStart), we = ymd(wEnd), td = ymd(today);
   const monthSpent = { food: 0, lbw: 0, supplies: 0 }, weekSpent = { food: 0, lbw: 0, supplies: 0 };
   // LBW spend by bucket (liquor / beer / wine / bar; 'lbw' = older unsplit rows)
@@ -1040,8 +1052,10 @@ async function renderBudgetPanel(el, monthRows) {
   // supplies budgets off TOTAL sales (food + LBW); food/LBW off their own revenue
   const baseMonth = baseOver(mStart, mThrough);
   const baseWeek = isCurrentMonth ? baseOver(wStart, wEnd) : { food: 0, lbw: 0, supplies: 0 };
+  const actMonth = actualOver(mStart, mThrough);
+  const actWeek = isCurrentMonth ? actualOver(wStart, wEnd) : { food: 0, lbw: 0, total: 0, last: null };
 
-  const row = (label, budget, spent) => {
+  const row = (label, budget, spent, costFig) => {
     const left = budget - spent, over = left < -0.005;
     const pct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
     return `<div class="pj-brow">
@@ -1051,6 +1065,7 @@ async function renderBudgetPanel(el, monthRows) {
         <div class="pj-bfig"><span>Budget</span><b>${money(budget)}</b></div>
         <div class="pj-bfig"><span>Spent</span><b>${money(spent)}</b></div>
         <div class="pj-bfig"><span>${over ? 'Over' : 'Left'}</span><b class="${over ? 'bad' : 'good'}">${money(Math.abs(left))}</b></div>
+        ${costFig || ''}
       </div>
     </div>`;
   };
@@ -1071,13 +1086,41 @@ async function renderBudgetPanel(el, monthRows) {
       <button data-bview="month" class="${view === 'month' ? 'on' : ''}">This month</button>
     </div>` : '';
 
-  box.innerHTML = toggle + order.map((cat) => {
+  // Actual sales for the period on view, and each category's cost against them.
+  const act = view === 'week' ? actWeek : actMonth;
+  const periodEnd = view === 'week' ? wEnd : mThrough;
+  const showLbw = tracked.includes('lbw');
+  const shortDate = (d) => d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  const salesCard = (() => {
+    const head = `<div class="pj-budgets-h">Actual sales <span>${view === 'week' ? 'This week' : monthLabelTxt}</span></div>`;
+    if (!act.last) {
+      return `<div class="pj-budgets pj-asales">${head}
+        <div class="pj-mg-note" style="margin-top:0">No actual sales have posted for ${view === 'week' ? 'this week' : 'this month'} yet.</div></div>`;
+    }
+    const through = act.last.getTime() < Math.min(periodEnd.getTime(), today.getTime())
+      ? `<div class="pj-mg-note">Through ${shortDate(act.last)}, the last day with sales posted.</div>` : '';
+    return `<div class="pj-budgets pj-asales">${head}
+      <div class="pj-bfigs pj-afigs">
+        <div class="pj-bfig"><span>Food</span><b>${money(act.food)}</b></div>
+        ${showLbw ? `<div class="pj-bfig"><span>LBW</span><b>${money(act.lbw)}</b></div>
+        <div class="pj-bfig"><span>Total</span><b>${money(act.total)}</b></div>` : ''}
+      </div>${through}</div>`;
+  })();
+  const costFig = (cat, spent, g) => {
+    if (cat !== 'food' && cat !== 'lbw') return '';
+    const sales = act[cat];
+    if (!(sales > 0)) return `<div class="pj-bfig" title="Cost as a % of actual sales"><span>% of actual</span><b>\u2014</b></div>`;
+    const pct = spent / sales;
+    return `<div class="pj-bfig" title="${LOG_LABELS[cat]} cost as a % of actual ${LOG_LABELS[cat]} sales (goal ${fmtPct(g)}%)"><span>% of actual</span><b class="${pct > g + 0.00005 ? 'bad' : 'good'}">${fmtPct(pct)}%</b></div>`;
+  };
+
+  box.innerHTML = toggle + salesCard + order.map((cat) => {
     const g = goals[cat];
     const label = (CATS.find((cc) => cc.key === cat) || {}).label || cat;
     const mB = baseMonth[cat] * g, wB = baseWeek[cat] * g;
     const body = view === 'week'
-      ? row('This week', wB, weekSpent[cat]) + (cat === 'lbw' ? subLine('This week', weekSub) : '')
-      : row(monthLabelTxt, mB, monthSpent[cat]) + (cat === 'lbw' ? subLine(monthLabelTxt, monthSub) : '');
+      ? row('This week', wB, weekSpent[cat], costFig(cat, weekSpent[cat], g)) + (cat === 'lbw' ? subLine('This week', weekSub) : '')
+      : row(monthLabelTxt, mB, monthSpent[cat], costFig(cat, monthSpent[cat], g)) + (cat === 'lbw' ? subLine(monthLabelTxt, monthSub) : '');
     return `<div class="pj-budgets">
       <div class="pj-budgets-h">${label} budget <span>${fmtPct(g)}% of sales</span></div>
       ${body}
@@ -1450,6 +1493,8 @@ function pjStyles() {
     #tab-projections .pj-bfig b{font-family:var(--font-display);font-weight:800;font-size:16px;color:var(--navy)}
     #tab-projections .pj-bfig b.good{color:var(--green)}
     #tab-projections .pj-bfig b.bad{color:var(--red)}
+    #tab-projections .pj-afigs{gap:32px;flex-wrap:wrap}
+    #tab-projections .pj-afigs .pj-bfig b{font-size:20px}
     @media (max-width:640px){#tab-projections .pj-blabel{width:100%}#tab-projections .pj-bfigs{gap:16px}}
     #tab-projections .pj-totals{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
     #tab-projections .pj-tcard{flex:1;min-width:120px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px;display:flex;flex-direction:column;gap:4px}
