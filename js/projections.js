@@ -797,6 +797,7 @@ async function saveSales(el, method, dates, prof) {
    "snap a receipt" path that extracts fields via the receipt-extract fn.
    =================================================================== */
 async function renderLog(el) {
+  store.qboMsg = null;
   const cats = (store.profile && store.profile.categories) || ['food', 'lbw', 'supplies'];
   const m = store.month;
   el.innerHTML = `
@@ -1092,7 +1093,9 @@ async function renderBudgetPanel(el, monthRows) {
   const showLbw = tracked.includes('lbw');
   const shortDate = (d) => d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   const salesCard = (() => {
-    const head = `<div class="pj-budgets-h">Actual sales <span>${view === 'week' ? 'This week' : monthLabelTxt}</span></div>`;
+    const head = `<div class="pj-budgets-h pj-ahead">Actual sales <span>${view === 'week' ? 'This week' : monthLabelTxt}</span>
+      <button class="pj-link pj-arefresh" id="pjARefresh" title="Pull the latest sales from QuickBooks">\u21bb Refresh from QuickBooks</button></div>
+      ${store.qboMsg ? `<div class="pj-mg-note pj-amsg ${store.qboMsg.bad ? 'bad' : ''}" style="margin-top:0">${esc(store.qboMsg.text)}</div>` : ''}`;
     if (!act.last) {
       return `<div class="pj-budgets pj-asales">${head}
         <div class="pj-mg-note" style="margin-top:0">No actual sales have posted for ${view === 'week' ? 'this week' : 'this month'} yet.</div></div>`;
@@ -1128,6 +1131,32 @@ async function renderBudgetPanel(el, monthRows) {
   }).join('') + (usedActual
     ? `<div class="pj-mg-note">Budget reflects the sales that actually posted on days QuickBooks has closed, and the projection on days it hasn't.</div>`
     : '');
+
+  const refreshBtn = box.querySelector('#pjARefresh');
+  if (refreshBtn) refreshBtn.addEventListener('click', async () => {
+    // Pull everything this panel can show (this week + the month to date, or
+    // the whole past month) and save it, then redraw from the saved numbers.
+    const to = spanTo.getTime() > today.getTime() ? today : spanTo;
+    refreshBtn.disabled = true; refreshBtn.textContent = 'Refreshing\u2026';
+    try {
+      const { data, error } = await sb.functions.invoke('qbo-actuals', {
+        body: { client_id: ctx.clientId, start: ymd(spanFrom), end: ymd(to), save: true },
+      });
+      if (error) throw new Error(error.message || 'request failed');
+      if (data && data.error === 'not_connected') store.qboMsg = { bad: true, text: "QuickBooks isn't connected for this client." };
+      else if (data && data.error === 'reauth_needed') store.qboMsg = { bad: true, text: 'QuickBooks needs to be reconnected before sales can refresh.' };
+      else if (!data || !data.ok) throw new Error((data && (data.message || data.error)) || 'no result');
+      else if (data.hadActivity && !data.mapped) store.qboMsg = { bad: true, text: "QuickBooks has activity for these days, but none of it maps to food or LBW sales \u2014 nothing was changed." };
+      else if (!data.through) store.qboMsg = { bad: false, text: 'QuickBooks has no sales posted for these days yet.' };
+      else {
+        const t = new Date(data.through + 'T00:00:00');
+        store.qboMsg = { bad: false, text: `Updated from QuickBooks \u2014 sales posted through ${shortDate(t)}.` };
+      }
+    } catch (e) {
+      store.qboMsg = { bad: true, text: `Couldn't refresh from QuickBooks: ${e.message}` };
+    }
+    renderBudgetPanel(el, monthRows);
+  });
 
   box.querySelectorAll('[data-bview]').forEach((b) => b.addEventListener('click', () => {
     if (store.budgetView === b.dataset.bview) return;
@@ -1494,6 +1523,11 @@ function pjStyles() {
     #tab-projections .pj-bfig b.good{color:var(--green)}
     #tab-projections .pj-bfig b.bad{color:var(--red)}
     #tab-projections .pj-afigs{gap:32px;flex-wrap:wrap}
+    #tab-projections .pj-ahead{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 0}
+    #tab-projections .pj-arefresh{margin-left:auto;font-size:12.5px}
+    #tab-projections .pj-arefresh:disabled{opacity:.6;cursor:default}
+    #tab-projections .pj-amsg{margin-bottom:10px}
+    #tab-projections .pj-amsg.bad{color:var(--red)}
     #tab-projections .pj-afigs .pj-bfig b{font-size:20px}
     @media (max-width:640px){#tab-projections .pj-blabel{width:100%}#tab-projections .pj-bfigs{gap:16px}}
     #tab-projections .pj-totals{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
